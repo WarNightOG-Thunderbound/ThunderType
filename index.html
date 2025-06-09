@@ -4,23 +4,46 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>ThunderType</title>
+  <!-- Firebase SDKs -->
+  <script src="https://www.gstatic.com/firebasejs/9.6.0/firebase-app-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/9.6.0/firebase-auth-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/9.6.0/firebase-database-compat.js"></script>
   <style>
     body { font-family: Arial, sans-serif; margin: 0; padding: 0; }
-    .screen { display: none; padding: 20px; }
-    #loading-screen { background: #f0f0f0; }
-    #auth-screen { background: #e0e0ff; }
+    .screen { display: none; padding: 20px; min-height: 100vh; }
+    #loading-screen { background: #f0f0f0; display: flex; flex-direction: column; justify-content: center; align-items: center; }
+    #auth-screen { background: #e0e0ff; display: flex; flex-direction: column; align-items: center; padding-top: 50px; }
     #hub-screen { background: #f0fff0; }
     
-    /* Performance classes */
-    .low-end * { animation: none !important; transition: none !important; }
-    .low-end { background-image: none !important; }
+    /* Auth forms */
+    .auth-form { display: flex; flex-direction: column; width: 300px; gap: 10px; margin: 20px 0; }
+    .auth-form input { padding: 8px; font-size: 16px; }
+    .auth-form button { padding: 10px; background: #4CAF50; color: white; border: none; cursor: pointer; }
+    
+    /* Hub styles */
+    #user-stats { background: white; padding: 10px; border-radius: 5px; margin: 10px 0; }
+    nav { display: flex; gap: 10px; margin: 10px 0; }
+    .tab-btn { padding: 8px 15px; cursor: pointer; }
+    .tab-content { display: none; padding: 20px 0; }
+    .tab-content.active { display: block; }
     
     /* Typing test */
     .typing-test { max-width: 800px; margin: 0 auto; }
-    .text-display { font-family: monospace; font-size: 1.2rem; line-height: 1.5; }
+    .text-display { font-family: monospace; font-size: 1.2rem; line-height: 1.5; margin-bottom: 20px; padding: 10px; background: white; min-height: 100px; }
     .correct { color: green; }
     .incorrect { color: red; text-decoration: underline; }
     .current { background-color: yellow; }
+    #typing-input { width: 100%; padding: 10px; font-size: 16px; }
+    .stats { display: flex; gap: 20px; margin-top: 10px; }
+    
+    /* Posts */
+    #post-form { margin-bottom: 20px; }
+    #post-content { width: 100%; min-height: 80px; }
+    .post { background: white; padding: 15px; margin-bottom: 15px; border-radius: 5px; }
+    
+    /* Performance classes */
+    body.low-end * { animation: none !important; transition: none !important; }
+    body.low-end { background-image: none !important; }
   </style>
 </head>
 <body>
@@ -32,17 +55,22 @@
     
     <div id="auth-screen" class="screen">
       <h1>Welcome to ThunderType</h1>
-      <div id="login-form">
+      <div class="auth-form" id="login-form">
         <input type="email" id="login-email" placeholder="Email">
         <input type="password" id="login-password" placeholder="Password">
         <button id="login-btn">Login</button>
+        <p>Don't have an account? <a href="#" id="show-register">Register</a></p>
       </div>
-      <div id="register-form">
+      
+      <div class="auth-form" id="register-form" style="display: none;">
         <input type="text" id="register-username" placeholder="Username">
         <input type="email" id="register-email" placeholder="Email">
         <input type="password" id="register-password" placeholder="Password">
-        <!-- TCaptchas would go here -->
+        <div id="tcaptchas">
+          <!-- TCaptchas would be added here -->
+        </div>
         <button id="register-btn">Register</button>
+        <p>Already have an account? <a href="#" id="show-login">Login</a></p>
       </div>
     </div>
     
@@ -57,40 +85,431 @@
       </header>
       
       <nav>
-        <button class="tab-btn" data-tab="levels">Levels</button>
+        <button class="tab-btn active" data-tab="levels">Levels</button>
         <button class="tab-btn" data-tab="social">Social</button>
         <button class="tab-btn" data-tab="games">Games</button>
         <button id="logout-btn">Logout</button>
       </nav>
       
       <main>
-        <div id="levels-tab" class="tab-content">
+        <div id="levels-tab" class="tab-content active">
           <div class="typing-test">
-            <div class="text-display" id="typing-text"></div>
-            <input type="text" id="typing-input">
+            <h2>Level <span id="current-level">1</span></h2>
+            <div class="text-display" id="typing-text">Loading typing content...</div>
+            <input type="text" id="typing-input" placeholder="Start typing here...">
             <div class="stats">
               WPM: <span id="current-wpm">0</span> | 
-              Accuracy: <span id="accuracy">100</span>%
+              Accuracy: <span id="accuracy">100</span>% |
+              Progress: <span id="progress">0</span>%
             </div>
           </div>
         </div>
         
         <div id="social-tab" class="tab-content">
           <div id="post-form">
-            <textarea id="post-content"></textarea>
+            <h2>Create Post</h2>
+            <textarea id="post-content" placeholder="What's on your mind?"></textarea>
             <button id="post-btn">Post</button>
           </div>
-          <div id="posts-container"></div>
+          <div id="posts-container">
+            <h2>Community Posts</h2>
+            <div id="posts-list"></div>
+          </div>
         </div>
         
         <div id="games-tab" class="tab-content">
-          <iframe id="game-frame" src="about:blank"></iframe>
+          <h2>Games</h2>
+          <div id="games-list">
+            <button class="game-btn" data-game="slowroads">Slow Roads</button>
+            <button class="game-btn" data-game="snooker">Snooker</button>
+          </div>
+          <iframe id="game-frame" src="about:blank" style="width: 100%; height: 500px; border: none; display: none;"></iframe>
         </div>
       </main>
     </div>
   </div>
 
-  <script type="module" src="firebase.js"></script>
-  <script type="module" src="app.js"></script>
+  <script>
+    // Firebase configuration
+    const firebaseConfig = {
+      apiKey: "AIzaSyDq8efgFjoLFyiJOvM7pJEUOAgr5NSrHqo",
+      authDomain: "thundertype-7ba0d.firebaseapp.com",
+      databaseURL: "https://thundertype-7ba0d-default-rtdb.firebaseio.com",
+      projectId: "thundertype-7ba0d",
+      storageBucket: "thundertype-7ba0d.appspot.com",
+      messagingSenderId: "38206745209",
+      appId: "1:38206745209:web:d1a3dba72aa5c0466a42a8"
+    };
+
+    // Initialize Firebase
+    firebase.initializeApp(firebaseConfig);
+    const auth = firebase.auth();
+    const db = firebase.database();
+
+    // App state
+    let currentUser = null;
+    let userData = {};
+    let typingTest = {
+      text: "The quick brown fox jumps over the lazy dog. This is a sample typing test.",
+      position: 0,
+      startTime: null,
+      errors: 0,
+      timer: null
+    };
+
+    // DOM Elements
+    const screens = {
+      loading: document.getElementById('loading-screen'),
+      auth: document.getElementById('auth-screen'),
+      hub: document.getElementById('hub-screen')
+    };
+
+    const authForms = {
+      login: document.getElementById('login-form'),
+      register: document.getElementById('register-form')
+    };
+
+    // Initialize the app
+    function init() {
+      setupAuthListeners();
+      setupUIListeners();
+      detectPerformance();
+      
+      // Show loading screen initially
+      showScreen('loading');
+      
+      // Check auth state
+      auth.onAuthStateChanged(user => {
+        if (user) {
+          currentUser = user;
+          loadUserData(user.uid);
+        } else {
+          showScreen('auth');
+        }
+      });
+    }
+
+    // Auth functions
+    async function login(email, password) {
+      try {
+        await auth.signInWithEmailAndPassword(email, password);
+        return true;
+      } catch (error) {
+        alert("Login failed: " + error.message);
+        return false;
+      }
+    }
+
+    async function register(username, email, password) {
+      try {
+        const userCredential = await auth.createUserWithEmailAndPassword(email, password);
+        await userCredential.user.updateProfile({ displayName: username });
+        
+        // Initialize user data
+        await db.ref(`users/${userCredential.user.uid}`).set({
+          username,
+          email,
+          level: 1,
+          coins: 100,
+          wpm: 0,
+          tier: 'bronze',
+          contacts: {},
+          groups: {},
+          lastActive: firebase.database.ServerValue.TIMESTAMP
+        });
+        
+        return true;
+      } catch (error) {
+        alert("Registration failed: " + error.message);
+        return false;
+      }
+    }
+
+    async function logout() {
+      try {
+        await auth.signOut();
+      } catch (error) {
+        console.error("Logout error:", error);
+      }
+    }
+
+    // User data functions
+    function loadUserData(uid) {
+      showScreen('loading');
+      
+      db.ref(`users/${uid}`).on('value', (snapshot) => {
+        userData = snapshot.val() || {};
+        updateHubUI();
+        showScreen('hub');
+        
+        // Load typing test
+        if (userData.level) {
+          loadTypingTest(userData.level);
+        }
+        
+        // Load posts
+        loadPosts();
+      });
+    }
+
+    // Typing test functions
+    function loadTypingTest(level) {
+      // In a real app, this would load from the database
+      const levelTexts = [
+        "The quick brown fox jumps over the lazy dog.",
+        "Programming is the process of creating a set of instructions that tell a computer how to perform a task.",
+        "To be or not to be, that is the question. Whether 'tis nobler in the mind to suffer the slings and arrows of outrageous fortune...",
+        "The universe is under no obligation to make sense to you. - Neil deGrasse Tyson",
+        "I have not failed. I've just found 10,000 ways that won't work. - Thomas Edison"
+      ];
+      
+      typingTest = {
+        text: levelTexts[Math.min(level - 1, levelTexts.length - 1)] || levelTexts[0],
+        position: 0,
+        startTime: null,
+        errors: 0,
+        timer: null
+      };
+      
+      renderTypingText();
+      document.getElementById('typing-input').value = '';
+      document.getElementById('typing-input').focus();
+    }
+
+    function renderTypingText() {
+      const textDisplay = document.getElementById('typing-text');
+      let html = '';
+      
+      for (let i = 0; i < typingTest.text.length; i++) {
+        let charClass = '';
+        
+        if (i < typingTest.position) {
+          charClass = typingTest.errors > 0 ? 'incorrect' : 'correct';
+        } else if (i === typingTest.position) {
+          charClass = 'current';
+        }
+        
+        html += `<span class="${charClass}">${typingTest.text[i]}</span>`;
+      }
+      
+      textDisplay.innerHTML = html;
+      updateTypingStats();
+    }
+
+    function updateTypingStats() {
+      if (typingTest.startTime) {
+        const now = Date.now();
+        const minutes = (now - typingTest.startTime) / 60000;
+        const words = typingTest.position / 5;
+        const wpm = minutes > 0 ? words / minutes : 0;
+        
+        const totalChars = typingTest.position + typingTest.errors;
+        const accuracy = totalChars > 0 ? 
+          Math.round((typingTest.position / totalChars) * 100) : 100;
+        
+        const progress = Math.round((typingTest.position / typingTest.text.length) * 100);
+        
+        document.getElementById('current-wpm').textContent = Math.round(wpm);
+        document.getElementById('accuracy').textContent = accuracy;
+        document.getElementById('progress').textContent = progress;
+      }
+    }
+
+    // Post functions
+    function loadPosts() {
+      db.ref('posts').limitToLast(10).on('value', (snapshot) => {
+        const postsList = document.getElementById('posts-list');
+        postsList.innerHTML = '';
+        
+        snapshot.forEach((childSnapshot) => {
+          const post = childSnapshot.val();
+          const postElement = document.createElement('div');
+          postElement.className = 'post';
+          postElement.innerHTML = `
+            <h3>${post.authorName || 'Anonymous'}</h3>
+            <p>${post.content}</p>
+            <div class="post-stats">
+              <button class="like-btn" data-id="${childSnapshot.key}">Like (${post.likes || 0})</button>
+              <button class="heart-btn" data-id="${childSnapshot.key}">❤️ (${post.hearts || 0})</button>
+            </div>
+          `;
+          postsList.appendChild(postElement);
+        });
+      });
+    }
+
+    async function createPost(content) {
+      if (!content.trim()) return;
+      
+      try {
+        await db.ref('posts').push({
+          authorId: currentUser.uid,
+          authorName: userData.username,
+          content,
+          timestamp: firebase.database.ServerValue.TIMESTAMP,
+          likes: 0,
+          hearts: 0
+        });
+        
+        document.getElementById('post-content').value = '';
+      } catch (error) {
+        console.error("Error creating post:", error);
+      }
+    }
+
+    // UI functions
+    function showScreen(screenName) {
+      for (const [key, element] of Object.entries(screens)) {
+        element.style.display = key === screenName ? 'block' : 'none';
+      }
+    }
+
+    function updateHubUI() {
+      if (!currentUser) return;
+      
+      document.getElementById('username-display').textContent = userData.username || 'User';
+      document.getElementById('level-display').textContent = userData.level || 1;
+      document.getElementById('coins-display').textContent = userData.coins || 0;
+      document.getElementById('wpm-display').textContent = userData.wpm || 0;
+      document.getElementById('current-level').textContent = userData.level || 1;
+    }
+
+    function detectPerformance() {
+      const cores = navigator.hardwareConcurrency || 2;
+      const memory = navigator.deviceMemory || 2;
+      
+      if (cores <= 2 && memory <= 2) {
+        document.body.classList.add('low-end');
+      } else if (cores <= 4 && memory <= 4) {
+        document.body.classList.add('mid-end');
+      } else {
+        document.body.classList.add('high-end');
+      }
+    }
+
+    // Event listeners setup
+    function setupAuthListeners() {
+      // Login form
+      document.getElementById('login-btn').addEventListener('click', async () => {
+        const email = document.getElementById('login-email').value;
+        const password = document.getElementById('login-password').value;
+        await login(email, password);
+      });
+      
+      // Register form
+      document.getElementById('register-btn').addEventListener('click', async () => {
+        const username = document.getElementById('register-username').value;
+        const email = document.getElementById('register-email').value;
+        const password = document.getElementById('register-password').value;
+        await register(username, email, password);
+      });
+      
+      // Toggle between login/register
+      document.getElementById('show-register').addEventListener('click', (e) => {
+        e.preventDefault();
+        authForms.login.style.display = 'none';
+        authForms.register.style.display = 'flex';
+      });
+      
+      document.getElementById('show-login').addEventListener('click', (e) => {
+        e.preventDefault();
+        authForms.register.style.display = 'none';
+        authForms.login.style.display = 'flex';
+      });
+    }
+
+    function setupUIListeners() {
+      // Logout
+      document.getElementById('logout-btn').addEventListener('click', logout);
+      
+      // Tab navigation
+      document.querySelectorAll('.tab-btn').forEach(btn => {
+        btn.addEventListener('click', () => {
+          document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+          document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
+          
+          btn.classList.add('active');
+          document.getElementById(`${btn.dataset.tab}-tab`).classList.add('active');
+          
+          // Special tab handling
+          if (btn.dataset.tab === 'games') {
+            document.getElementById('game-frame').style.display = 'none';
+          }
+        });
+      });
+      
+      // Typing test input
+      document.getElementById('typing-input').addEventListener('input', (e) => {
+        if (!typingTest.startTime) {
+          typingTest.startTime = Date.now();
+          typingTest.timer = setInterval(updateTypingStats, 100);
+        }
+        
+        const input = e.target.value;
+        const currentChar = typingTest.text[typingTest.position];
+        
+        if (input[input.length - 1] === currentChar) {
+          typingTest.position++;
+          e.target.value = '';
+        } else if (input.length > 0) {
+          typingTest.errors++;
+        }
+        
+        renderTypingText();
+        
+        // Check if completed
+        if (typingTest.position >= typingTest.text.length) {
+          clearInterval(typingTest.timer);
+          completeLevel();
+        }
+      });
+      
+      // Post creation
+      document.getElementById('post-btn').addEventListener('click', () => {
+        const content = document.getElementById('post-content').value;
+        createPost(content);
+      });
+      
+      // Game buttons
+      document.querySelectorAll('.game-btn').forEach(btn => {
+        btn.addEventListener('click', () => {
+          const gameFrame = document.getElementById('game-frame');
+          
+          switch(btn.dataset.game) {
+            case 'slowroads':
+              gameFrame.src = 'https://slowroads.io';
+              break;
+            case 'snooker':
+              gameFrame.src = 'https://www.snooker.org/';
+              break;
+          }
+          
+          gameFrame.style.display = 'block';
+        });
+      });
+    }
+
+    async function completeLevel() {
+      const wpm = Math.round(parseInt(document.getElementById('current-wpm').textContent));
+      const accuracy = parseInt(document.getElementById('accuracy').textContent);
+      
+      try {
+        await db.ref(`users/${currentUser.uid}`).update({
+          level: firebase.database.ServerValue.increment(1),
+          coins: firebase.database.ServerValue.increment(50),
+          wpm: Math.max(userData.wpm || 0, wpm),
+          lastActive: firebase.database.ServerValue.TIMESTAMP
+        });
+        
+        // Load next level
+        loadTypingTest((userData.level || 1) + 1);
+      } catch (error) {
+        console.error("Error updating level:", error);
+      }
+    }
+
+    // Start the app
+    init();
+  </script>
 </body>
 </html>
