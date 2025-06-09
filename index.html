@@ -1,0 +1,96 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>ThunderType</title>
+  <style>
+    body { font-family: Arial, sans-serif; margin: 0; padding: 0; }
+    .screen { display: none; padding: 20px; }
+    #loading-screen { background: #f0f0f0; }
+    #auth-screen { background: #e0e0ff; }
+    #hub-screen { background: #f0fff0; }
+    
+    /* Performance classes */
+    .low-end * { animation: none !important; transition: none !important; }
+    .low-end { background-image: none !important; }
+    
+    /* Typing test */
+    .typing-test { max-width: 800px; margin: 0 auto; }
+    .text-display { font-family: monospace; font-size: 1.2rem; line-height: 1.5; }
+    .correct { color: green; }
+    .incorrect { color: red; text-decoration: underline; }
+    .current { background-color: yellow; }
+  </style>
+</head>
+<body>
+  <div id="app">
+    <div id="loading-screen" class="screen">
+      <h1>Loading ThunderType</h1>
+      <p>Tip: Keep your fingers on the home row for better typing!</p>
+    </div>
+    
+    <div id="auth-screen" class="screen">
+      <h1>Welcome to ThunderType</h1>
+      <div id="login-form">
+        <input type="email" id="login-email" placeholder="Email">
+        <input type="password" id="login-password" placeholder="Password">
+        <button id="login-btn">Login</button>
+      </div>
+      <div id="register-form">
+        <input type="text" id="register-username" placeholder="Username">
+        <input type="email" id="register-email" placeholder="Email">
+        <input type="password" id="register-password" placeholder="Password">
+        <!-- TCaptchas would go here -->
+        <button id="register-btn">Register</button>
+      </div>
+    </div>
+    
+    <div id="hub-screen" class="screen">
+      <header>
+        <h1>Welcome, <span id="username-display"></span>!</h1>
+        <div id="user-stats">
+          Level: <span id="level-display">1</span> | 
+          Coins: <span id="coins-display">100</span> | 
+          WPM: <span id="wpm-display">0</span>
+        </div>
+      </header>
+      
+      <nav>
+        <button class="tab-btn" data-tab="levels">Levels</button>
+        <button class="tab-btn" data-tab="social">Social</button>
+        <button class="tab-btn" data-tab="games">Games</button>
+        <button id="logout-btn">Logout</button>
+      </nav>
+      
+      <main>
+        <div id="levels-tab" class="tab-content">
+          <div class="typing-test">
+            <div class="text-display" id="typing-text"></div>
+            <input type="text" id="typing-input">
+            <div class="stats">
+              WPM: <span id="current-wpm">0</span> | 
+              Accuracy: <span id="accuracy">100</span>%
+            </div>
+          </div>
+        </div>
+        
+        <div id="social-tab" class="tab-content">
+          <div id="post-form">
+            <textarea id="post-content"></textarea>
+            <button id="post-btn">Post</button>
+          </div>
+          <div id="posts-container"></div>
+        </div>
+        
+        <div id="games-tab" class="tab-content">
+          <iframe id="game-frame" src="about:blank"></iframe>
+        </div>
+      </main>
+    </div>
+  </div>
+
+  <script type="module" src="firebase.js"></script>
+  <script type="module" src="app.js"></script>
+</body>
+</html>
