@@ -1,0 +1,175 @@
+/* Base Styles */
+body {
+  font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+  margin: 0;
+  padding: 0;
+  background-color: #f5f5f5;
+  color: #333;
+}
+
+#app {
+  max-width: 1200px;
+  margin: 0 auto;
+  padding: 20px;
+}
+
+/* Performance Modes */
+body.low-end {
+  --animation-duration: 0.1s;
+  --background-blur: none;
+  --box-shadow: none;
+}
+
+body.mid-end {
+  --animation-duration: 0.3s;
+  --background-blur: blur(2px);
+  --box-shadow: 0 2px 5px rgba(0,0,0,0.1);
+}
+
+body.high-end {
+  --animation-duration: 0.5s;
+  --background-blur: blur(5px);
+  --box-shadow: 0 5px 15px rgba(0,0,0,0.2);
+}
+
+/* Auth Styles */
+.auth-container {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  height: 100vh;
+}
+
+.auth-form {
+  background: white;
+  padding: 30px;
+  border-radius: 8px;
+  box-shadow: var(--box-shadow);
+  width: 100%;
+  max-width: 400px;
+}
+
+.auth-form input {
+  width: 100%;
+  padding: 10px;
+  margin: 10px 0;
+  border: 1px solid #ddd;
+  border-radius: 4px;
+}
+
+.auth-form button {
+  width: 100%;
+  padding: 10px;
+  background-color: #4285f4;
+  color: white;
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+/* Hub Styles */
+.hub-container {
+  display: grid;
+  grid-template-rows: auto auto 1fr;
+  height: 100vh;
+}
+
+.hub-header {
+  display: flex;
+  justify-content: space-between;
+  padding: 15px;
+  background: white;
+  box-shadow: var(--box-shadow);
+}
+
+.hub-nav {
+  display: flex;
+  background: white;
+  box-shadow: var(--box-shadow);
+}
+
+.nav-btn {
+  padding: 15px;
+  border: none;
+  background: none;
+  cursor: pointer;
+}
+
+.nav-btn.active {
+  border-bottom: 2px solid #4285f4;
+}
+
+.hub-content {
+  padding: 20px;
+  background: white;
+  overflow-y: auto;
+}
+
+/* Post Styles */
+.post {
+  border: 1px solid #ddd;
+  padding: 15px;
+  margin-bottom: 15px;
+  border-radius: 8px;
+}
+
+.post-actions button {
+  margin-right: 10px;
+  padding: 5px 10px;
+  border: none;
+  background: #f0f0f0;
+  cursor: pointer;
+}
+
+/* Level Styles */
+.levels-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(250px, 1fr));
+  gap: 20px;
+}
+
+.level-card {
+  border: 1px solid #ddd;
+  padding: 15px;
+  border-radius: 8px;
+}
+
+.level-card.unlocked {
+  background: #e8f5e9;
+}
+
+.level-card.locked {
+  background: #f5f5f5;
+  opacity: 0.7;
+}
+
+.start-level {
+  padding: 8px 15px;
+  background: #4285f4;
+  color: white;
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+/* Performance Indicator */
+.performance-indicator {
+  padding: 5px 10px;
+  border-radius: 4px;
+  font-size: 0.8em;
+}
+
+.performance-indicator.low-end {
+  background: #ffcdd2;
+  color: #c62828;
+}
+
+.performance-indicator.mid-end {
+  background: #fff9c4;
+  color: #f9a825;
+}
+
+.performance-indicator.high-end {
+  background: #c8e6c9;
+  color: #388e3c;
+}
