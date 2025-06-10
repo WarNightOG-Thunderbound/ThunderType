@@ -53,6 +53,7 @@ class ThunderType {
     this.detectPerformance();
     this.setupAuthListener();
     this.renderLoadingScreen();
+    this.setupCustomCursor(); // Call the custom cursor setup
   }
 
   detectPerformance() {
@@ -451,6 +452,20 @@ class ThunderType {
   }
 
   // ==============
+  // Custom Cursor
+  // ==============
+  setupCustomCursor() {
+    const customCursor = document.createElement('div');
+    customCursor.id = 'custom-cursor';
+    document.body.appendChild(customCursor);
+
+    document.addEventListener('mousemove', (e) => {
+      customCursor.style.left = `${e.clientX}px`;
+      customCursor.style.top = `${e.clientY}px`;
+    });
+  }
+
+  // ==============
   // Initialization
   // ==============
   updateUI() {
@@ -466,4 +481,4 @@ class ThunderType {
 }
 
 // Initialize the app
-new ThunderType(); // Changed from 'const app = new ThunderType();' to avoid redeclaration.
+new ThunderType(); // Fixed: Removed 'const app =' to prevent redeclaration.
