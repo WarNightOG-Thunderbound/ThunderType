@@ -2,21 +2,21 @@
 // Firebase Configuration
 // ======================
 import { initializeApp } from "https://www.gstatic.com/firebasejs/9.6.0/firebase-app.js";
-import { 
-  getAuth, 
-  createUserWithEmailAndPassword, 
+import {
+  getAuth,
+  createUserWithEmailAndPassword,
   signInWithEmailAndPassword,
   onAuthStateChanged
 } from "https://www.gstatic.com/firebasejs/9.6.0/firebase-auth.js";
-import { 
-  getDatabase, 
-  ref, 
-  set, 
+import {
+  getDatabase,
+  ref,
+  set,
   onValue,
   push,
   serverTimestamp
 } from "https://www.gstatic.com/firebasejs/9.6.0/firebase-database.js";
-import { 
+import {
   getStorage,
   uploadBytes,
   ref as storageRef
@@ -60,11 +60,11 @@ class ThunderType {
     let count = 0;
     for (let i = 0; i < 1000000; i++) count += Math.sqrt(i);
     const duration = performance.now() - start;
-    
+
     if (duration > 100) this.performanceProfile = 'low-end';
     else if (duration > 50) this.performanceProfile = 'mid-end';
     else this.performanceProfile = 'high-end';
-    
+
     document.body.classList.add(this.performanceProfile);
   }
 
@@ -98,7 +98,7 @@ class ThunderType {
       "Try to type without looking at your keyboard"
     ];
     const tip = tips[Math.floor(Math.random() * tips.length)];
-    
+
     document.getElementById('app').innerHTML = `
       <div class="loading-screen">
         <div class="spinner"></div>
@@ -117,16 +117,16 @@ class ThunderType {
           <button id="login-btn">Login</button>
           <p class="switch-mode">Don't have an account? <a href="#" id="show-register">Register</a></p>
         </div>
-        
+
         <div class="auth-form" id="register-form" style="display:none">
           <h2>Register</h2>
           <input type="email" id="register-email" placeholder="Email">
           <input type="password" id="register-password" placeholder="Password">
-          
+
           <div class="tcaptcha-container" id="tcaptcha-1"></div>
           <div class="tcaptcha-container" id="tcaptcha-2"></div>
           <div class="tcaptcha-container" id="tcaptcha-3"></div>
-          
+
           <button id="register-btn">Register</button>
           <p class="switch-mode">Already have an account? <a href="#" id="show-login">Login</a></p>
         </div>
@@ -161,7 +161,7 @@ class ThunderType {
             ${this.performanceProfile} mode
           </div>
         </header>
-        
+
         <nav class="hub-nav">
           <button class="nav-btn active" data-tab="hub">Hub</button>
           <button class="nav-btn" data-tab="levels">Levels</button>
@@ -171,10 +171,9 @@ class ThunderType {
           <button class="nav-btn" data-tab="groups">Groups</button>
           <button class="nav-btn" data-tab="games">Games</button>
         </nav>
-        
+
         <main class="hub-content" id="hub-content">
-          <!-- Tab content will be loaded here -->
-        </main>
+          </main>
       </div>
     `;
 
@@ -194,7 +193,7 @@ class ThunderType {
 
   loadTabContent() {
     const contentEl = document.getElementById('hub-content');
-    
+
     switch(this.activeTab) {
       case 'hub':
         this.renderHubContent(contentEl);
@@ -225,7 +224,7 @@ class ThunderType {
           </div>
         </div>
       </div>
-      
+
       <div class="activity-feed">
         <h3>Recent Activity</h3>
         <div id="posts-feed"></div>
@@ -242,7 +241,7 @@ class ThunderType {
   async generateTCaptchas() {
     const types = ['math', 'sequence', 'word'];
     this.currentCaptchas = [];
-    
+
     for (let i = 1; i <= 3; i++) {
       const type = types[Math.floor(Math.random() * types.length)];
       const captcha = await this.createTCaptcha(type);
@@ -285,12 +284,12 @@ class ThunderType {
 
   validateTCaptchas() {
     if (!this.currentCaptchas) return false;
-    
+
     const answers = Array.from(document.querySelectorAll('.tcaptcha-answer')).map(input => ({
       id: parseInt(input.dataset.id),
       value: input.value.trim()
     }));
-    
+
     return this.currentCaptchas.every((captcha, index) => {
       const userAnswer = answers.find(a => a.id === index + 1);
       return userAnswer && userAnswer.value === captcha.answer;
@@ -303,7 +302,7 @@ class ThunderType {
   async handleLogin() {
     const email = document.getElementById('login-email').value;
     const password = document.getElementById('login-password').value;
-    
+
     try {
       await signInWithEmailAndPassword(auth, email, password);
     } catch (error) {
@@ -314,12 +313,12 @@ class ThunderType {
   async handleRegister() {
     const email = document.getElementById('register-email').value;
     const password = document.getElementById('register-password').value;
-    
+
     if (!this.validateTCaptchas()) {
       alert('Please complete all captchas correctly');
       return;
     }
-    
+
     try {
       const userCredential = await createUserWithEmailAndPassword(auth, email, password);
       await this.initializeUserData(userCredential.user.uid);
@@ -353,7 +352,7 @@ class ThunderType {
       const postsList = Object.entries(posts)
         .map(([id, post]) => ({ id, ...post }))
         .sort((a, b) => b.timestamp - a.timestamp);
-      
+
       this.renderPosts(postsList);
     });
   }
@@ -361,7 +360,7 @@ class ThunderType {
   renderPosts(posts) {
     const container = document.getElementById('posts-feed');
     if (!container) return;
-    
+
     container.innerHTML = posts.map(post => `
       <div class="post" data-id="${post.id}">
         <div class="post-header">
@@ -379,12 +378,12 @@ class ThunderType {
         </div>
       </div>
     `).join('');
-    
+
     // Add event listeners
     document.querySelectorAll('.like-btn').forEach(btn => {
       btn.addEventListener('click', () => this.handleLike(btn.dataset.id));
     });
-    
+
     document.querySelectorAll('.heart-btn').forEach(btn => {
       btn.addEventListener('click', () => this.handleHeart(btn.dataset.id));
     });
@@ -412,7 +411,7 @@ class ThunderType {
         <div class="levels-grid" id="levels-grid"></div>
       </div>
     `;
-    
+
     this.loadLevels();
   }
 
@@ -427,7 +426,7 @@ class ThunderType {
   renderLevels(levels) {
     const container = document.getElementById('levels-grid');
     if (!container) return;
-    
+
     container.innerHTML = Object.entries(levels)
       .sort(([idA, levelA], [idB, levelB]) => levelA.requiredLevel - levelB.requiredLevel)
       .map(([id, level]) => `
@@ -435,12 +434,12 @@ class ThunderType {
           <h3>${level.title}</h3>
           <p>${level.description || 'Test your typing skills'}</p>
           <p>Required Level: ${level.requiredLevel}</p>
-          ${this.userData.level >= level.requiredLevel ? 
+          ${this.userData.level >= level.requiredLevel ?
             `<button class="start-level" data-id="${id}">Start</button>` :
             '<div class="locked-label">Locked</div>'}
         </div>
       `).join('');
-    
+
     document.querySelectorAll('.start-level').forEach(btn => {
       btn.addEventListener('click', () => this.startLevel(btn.dataset.id));
     });
@@ -459,7 +458,7 @@ class ThunderType {
     const usernameEl = document.querySelector('.username');
     const levelEl = document.querySelector('.level');
     const coinsEl = document.querySelector('.coins');
-    
+
     if (usernameEl) usernameEl.textContent = this.userData.username || 'User';
     if (levelEl) levelEl.textContent = `Level ${this.userData.level || 1}`;
     if (coinsEl) coinsEl.textContent = `${this.userData.coins || 0} coins`;
@@ -467,4 +466,4 @@ class ThunderType {
 }
 
 // Initialize the app
-const app = new ThunderType();
+new ThunderType(); // Changed from 'const app = new ThunderType();' to avoid redeclaration.
