@@ -1,41 +1,41 @@
 // ======================
 // Firebase Configuration
 // ======================
-import { initializeApp } from "https://www.gstatic.com/firebasejs/9.6.0/firebase-app.js";
+// Import Firebase modules using the latest versions
+import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
 import {
   getAuth,
   createUserWithEmailAndPassword,
   signInWithEmailAndPassword,
-  onAuthStateChanged
-} from "https://www.gstatic.com/firebasejs/9.6.0/firebase-auth.js";
+  onAuthStateChanged,
+  signInWithCustomToken, // Added for Canvas environment
+  signInAnonymously // Added for Canvas environment
+} from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
 import {
-  getDatabase,
-  ref,
-  set,
-  onValue,
-  push,
-  serverTimestamp
-} from "https://www.gstatic.com/firebasejs/9.6.0/firebase-database.js";
-import {
-  getStorage,
-  uploadBytes,
-  ref as storageRef
-} from "https://www.gstatic.com/firebasejs/9.6.0/firebase-storage.js";
+  getFirestore,
+  doc,
+  setDoc,
+  getDoc,
+  onSnapshot, // For real-time updates
+  collection,
+  query,
+  orderBy, // To sort levels
+  serverTimestamp,
+  addDoc,
+  updateDoc,
+  arrayUnion,
+  arrayRemove
+} from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
 
-const firebaseConfig = {
-  apiKey: "AIzaSyDq8efgFjoLFyiJOvM7pJEUOAgr5NSrHqo",
-  authDomain: "thundertype-7ba0d.firebaseapp.com",
-  projectId: "thundertype-7ba0d",
-  storageBucket: "thundertype-7ba0d.firebasestorage.app",
-  messagingSenderId: "38206745209",
-  appId: "1:38206745209:web:d1a3dba72aa5c0466a42a8",
-  databaseURL: "https://thundertype-7ba0d-default-rtdb.firebaseio.com/"
-};
+// Global variables provided by the Canvas environment
+const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
+const firebaseConfig = JSON.parse(typeof __firebase_config !== 'undefined' ? __firebase_config : '{}');
+const initialAuthToken = typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : null;
 
+// Initialize Firebase
 const app = initializeApp(firebaseConfig);
 const auth = getAuth(app);
-const db = getDatabase(app);
-const storage = getStorage(app);
+const db = getFirestore(app);
 
 // =================
 // Core Application
@@ -46,6 +46,15 @@ class ThunderType {
     this.userData = null;
     this.activeTab = 'hub';
     this.performanceProfile = 'mid-end';
+    this.isAuthReady = false; // New state to track auth readiness
+    this.currentLevelText = ''; // Stores the text for the current typing level
+    this.typedText = ''; // Stores what the user has typed
+    this.errors = 0; // Counts typing errors
+    this.correctChars = 0; // Counts correctly typed characters
+    this.startTime = 0; // For WPM calculation
+    this.timerInterval = null; // For the typing timer
+    this.typingActive = false; // Flag to indicate if typing session is active
+
     this.init();
   }
 
@@ -53,10 +62,11 @@ class ThunderType {
     this.detectPerformance();
     this.setupAuthListener();
     this.renderLoadingScreen();
-    this.setupCustomCursor(); // Call the custom cursor setup
+    this.setupCustomCursor();
   }
 
   detectPerformance() {
+    // This performance detection is a simple heuristic and might need fine-tuning
     const start = performance.now();
     let count = 0;
     for (let i = 0; i < 1000000; i++) count += Math.sqrt(i);
@@ -67,25 +77,75 @@ class ThunderType {
     else this.performanceProfile = 'high-end';
 
     document.body.classList.add(this.performanceProfile);
+    console.log(`Performance Profile: ${this.performanceProfile}`);
   }
 
   setupAuthListener() {
-    onAuthStateChanged(auth, (user) => {
-      if (user) {
-        this.currentUser = user;
+    onAuthStateChanged(auth, async (user) => {
+      if (initialAuthToken && !this.currentUser) {
+        // Sign in with custom token if available and not already signed in
+        try {
+          await signInWithCustomToken(auth, initialAuthToken);
+          console.log('Signed in with custom token.');
+        } catch (error) {
+          console.error('Error signing in with custom token:', error);
+          // Fallback to anonymous if custom token fails
+          try {
+            await signInAnonymously(auth);
+            console.log('Signed in anonymously after custom token failure.');
+          } catch (anonError) {
+            console.error('Error signing in anonymously:', anonError);
+          }
+        }
+      } else if (!user) {
+        // Sign in anonymously if no user and no initial token (or token failed)
+        try {
+          await signInAnonymously(auth);
+          console.log('Signed in anonymously.');
+        } catch (error) {
+          console.error('Error signing in anonymously:', error);
+        }
+      }
+
+      this.currentUser = auth.currentUser; // Update current user after potential sign-in
+      this.isAuthReady = true; // Auth state is now determined
+
+      if (this.currentUser) {
+        console.log('User is logged in:', this.currentUser.uid);
         this.loadUserData();
         this.renderHub();
       } else {
+        console.log('No user logged in, rendering auth screen.');
         this.renderAuthScreen();
       }
     });
   }
 
   async loadUserData() {
-    const userRef = ref(db, `users/${this.currentUser.uid}`);
-    onValue(userRef, (snapshot) => {
-      this.userData = snapshot.val() || {};
+    if (!this.currentUser || !this.isAuthReady) return;
+
+    // Use a unique path for user data based on appId and userId for Firestore
+    const userDocRef = doc(db, `artifacts/${appId}/users/${this.currentUser.uid}/userData/profile`);
+    console.log('Loading user data from:', userDocRef.path);
+
+    onSnapshot(userDocRef, async (docSnap) => {
+      if (docSnap.exists()) {
+        this.userData = docSnap.data();
+        console.log('User data loaded:', this.userData);
+      } else {
+        // Initialize new user data if it doesn't exist
+        console.log('No user data found, initializing...');
+        await this.initializeUserData(this.currentUser.uid);
+      }
       this.updateUI();
+      // Ensure hub is rendered only after user data is loaded/initialized
+      if (document.getElementById('app').querySelector('.loading-screen')) {
+         this.renderHub();
+      }
+    }, (error) => {
+      console.error('Error loading user data:', error);
+      // Even if loading fails, try to render the hub to avoid being stuck on loading
+      this.renderHub();
     });
   }
 
@@ -96,51 +156,57 @@ class ThunderType {
     const tips = [
       "Keep your fingers on the home row for better typing speed",
       "Practice regularly to improve your muscle memory",
-      "Try to type without looking at your keyboard"
+      "Try to type without looking at your keyboard",
+      "Focus on accuracy before speed",
+      "Use all your fingers, not just two!"
     ];
     const tip = tips[Math.floor(Math.random() * tips.length)];
 
     document.getElementById('app').innerHTML = `
-      <div class="loading-screen">
-        <div class="spinner"></div>
-        <p class="tip">${tip}</p>
+      <div class="loading-screen flex flex-col items-center justify-center h-screen bg-gray-100">
+        <div class="spinner border-t-4 border-blue-500 border-solid rounded-full w-16 h-16 animate-spin"></div>
+        <p class="tip text-lg text-gray-700 mt-4">${tip}</p>
       </div>
     `;
   }
 
   renderAuthScreen() {
     document.getElementById('app').innerHTML = `
-      <div class="auth-container">
-        <div class="auth-form" id="login-form">
-          <h2>Login</h2>
-          <input type="email" id="login-email" placeholder="Email">
-          <input type="password" id="login-password" placeholder="Password">
-          <button id="login-btn">Login</button>
-          <p class="switch-mode">Don't have an account? <a href="#" id="show-register">Register</a></p>
-        </div>
+      <div class="auth-container min-h-screen flex items-center justify-center bg-gray-100">
+        <div class="auth-form bg-white p-8 rounded-lg shadow-lg w-full max-w-md">
+          <div id="login-form">
+            <h2 class="text-2xl font-bold mb-6 text-center text-gray-800">Login</h2>
+            <input type="email" id="login-email" placeholder="Email" class="w-full px-4 py-2 mb-4 border rounded-md focus:outline-none focus:ring-2 focus:ring-blue-400">
+            <input type="password" id="login-password" placeholder="Password" class="w-full px-4 py-2 mb-6 border rounded-md focus:outline-none focus:ring-2 focus:ring-blue-400">
+            <button id="login-btn" class="w-full bg-blue-600 text-white py-2 rounded-md hover:bg-blue-700 transition-colors duration-200">Login</button>
+            <p class="switch-mode text-center mt-4 text-gray-600">Don't have an account? <a href="#" id="show-register" class="text-blue-600 hover:underline">Register</a></p>
+          </div>
 
-        <div class="auth-form" id="register-form" style="display:none">
-          <h2>Register</h2>
-          <input type="email" id="register-email" placeholder="Email">
-          <input type="password" id="register-password" placeholder="Password">
+          <div id="register-form" style="display:none">
+            <h2 class="text-2xl font-bold mb-6 text-center text-gray-800">Register</h2>
+            <input type="email" id="register-email" placeholder="Email" class="w-full px-4 py-2 mb-4 border rounded-md focus:outline-none focus:ring-2 focus:ring-blue-400">
+            <input type="password" id="register-password" placeholder="Password" class="w-full px-4 py-2 mb-4 border rounded-md focus:outline-none focus:ring-2 focus:ring-blue-400">
 
-          <div class="tcaptcha-container" id="tcaptcha-1"></div>
-          <div class="tcaptcha-container" id="tcaptcha-2"></div>
-          <div class="tcaptcha-container" id="tcaptcha-3"></div>
+            <div class="tcaptcha-container mb-4" id="tcaptcha-1"></div>
+            <div class="tcaptcha-container mb-4" id="tcaptcha-2"></div>
+            <div class="tcaptcha-container mb-6" id="tcaptcha-3"></div>
 
-          <button id="register-btn">Register</button>
-          <p class="switch-mode">Already have an account? <a href="#" id="show-login">Login</a></p>
+            <button id="register-btn" class="w-full bg-blue-600 text-white py-2 rounded-md hover:bg-blue-700 transition-colors duration-200">Register</button>
+            <p class="switch-mode text-center mt-4 text-gray-600">Already have an account? <a href="#" id="show-login" class="text-blue-600 hover:underline">Login</a></p>
+          </div>
         </div>
       </div>
     `;
 
-    document.getElementById('show-register').addEventListener('click', () => {
+    document.getElementById('show-register').addEventListener('click', (e) => {
+      e.preventDefault();
       document.getElementById('login-form').style.display = 'none';
       document.getElementById('register-form').style.display = 'block';
       this.generateTCaptchas();
     });
 
-    document.getElementById('show-login').addEventListener('click', () => {
+    document.getElementById('show-login').addEventListener('click', (e) => {
+      e.preventDefault();
       document.getElementById('register-form').style.display = 'none';
       document.getElementById('login-form').style.display = 'block';
     });
@@ -151,34 +217,36 @@ class ThunderType {
 
   renderHub() {
     document.getElementById('app').innerHTML = `
-      <div class="hub-container">
-        <header class="hub-header">
-          <div class="user-info">
-            <span class="username">${this.userData.username || 'User'}</span>
-            <span class="level">Level ${this.userData.level || 1}</span>
-            <span class="coins">${this.userData.coins || 0} coins</span>
+      <div class="hub-container min-h-screen flex flex-col bg-gray-100">
+        <header class="hub-header bg-white shadow-md p-4 flex justify-between items-center">
+          <div class="user-info flex items-center space-x-4">
+            <span class="username font-semibold text-lg text-gray-800">${this.userData?.username || 'User'}</span>
+            <span class="level text-gray-600">Level ${this.userData?.level || 1}</span>
+            <span class="coins text-yellow-600">${this.userData?.coins || 0} <i class="fas fa-coins"></i></span>
+            <span class="text-gray-600 text-sm">UID: ${this.currentUser?.uid || 'N/A'}</span>
           </div>
-          <div class="performance-indicator ${this.performanceProfile}">
+          <div class="performance-indicator ${this.performanceProfile} px-3 py-1 rounded-full text-sm">
             ${this.performanceProfile} mode
           </div>
         </header>
 
-        <nav class="hub-nav">
-          <button class="nav-btn active" data-tab="hub">Hub</button>
-          <button class="nav-btn" data-tab="levels">Levels</button>
-          <button class="nav-btn" data-tab="lessons">Lessons</button>
-          <button class="nav-btn" data-tab="posts">Posts</button>
-          <button class="nav-btn" data-tab="contacts">Contacts</button>
-          <button class="nav-btn" data-tab="groups">Groups</button>
-          <button class="nav-btn" data-tab="games">Games</button>
+        <nav class="hub-nav bg-white shadow-sm flex justify-center border-b border-gray-200">
+          <button class="nav-btn ${this.activeTab === 'hub' ? 'active' : ''} px-6 py-3 text-gray-700 hover:text-blue-600 hover:bg-gray-50 transition-colors duration-200" data-tab="hub">Hub</button>
+          <button class="nav-btn ${this.activeTab === 'levels' ? 'active' : ''} px-6 py-3 text-gray-700 hover:text-blue-600 hover:bg-gray-50 transition-colors duration-200" data-tab="levels">Levels</button>
+          <button class="nav-btn ${this.activeTab === 'lessons' ? 'active' : ''} px-6 py-3 text-gray-700 hover:text-blue-600 hover:bg-gray-50 transition-colors duration-200" data-tab="lessons">Lessons</button>
+          <button class="nav-btn ${this.activeTab === 'typing' ? 'active' : ''} px-6 py-3 text-gray-700 hover:text-blue-600 hover:bg-gray-50 transition-colors duration-200" data-tab="typing">Typing Practice</button>
+          <button class="nav-btn ${this.activeTab === 'posts' ? 'active' : ''} px-6 py-3 text-gray-700 hover:text-blue-600 hover:bg-gray-50 transition-colors duration-200" data-tab="posts">Posts</button>
+          <button class="nav-btn ${this.activeTab === 'contacts' ? 'active' : ''} px-6 py-3 text-gray-700 hover:text-blue-600 hover:bg-gray-50 transition-colors duration-200" data-tab="contacts">Contacts</button>
+          <button class="nav-btn ${this.activeTab === 'groups' ? 'active' : ''} px-6 py-3 text-gray-700 hover:text-blue-600 hover:bg-gray-50 transition-colors duration-200" data-tab="groups">Groups</button>
+          <button class="nav-btn ${this.activeTab === 'games' ? 'active' : ''} px-6 py-3 text-gray-700 hover:text-blue-600 hover:bg-gray-50 transition-colors duration-200" data-tab="games">Games</button>
         </nav>
 
-        <main class="hub-content" id="hub-content">
-          </main>
+        <main class="hub-content p-6 flex-grow overflow-y-auto bg-gray-50 rounded-b-lg">
+          <div id="hub-content-display"></div>
+        </main>
       </div>
     `;
 
-    // Add tab event listeners
     document.querySelectorAll('.nav-btn').forEach(btn => {
       btn.addEventListener('click', (e) => {
         this.activeTab = e.target.dataset.tab;
@@ -188,12 +256,12 @@ class ThunderType {
       });
     });
 
-    // Load initial tab
     this.loadTabContent();
   }
 
   loadTabContent() {
-    const contentEl = document.getElementById('hub-content');
+    const contentEl = document.getElementById('hub-content-display');
+    if (!contentEl) return;
 
     switch(this.activeTab) {
       case 'hub':
@@ -202,42 +270,59 @@ class ThunderType {
       case 'levels':
         this.renderLevelsContent(contentEl);
         break;
-      // Other tabs...
+      case 'lessons':
+        this.renderLessonsContent(contentEl);
+        break;
+      case 'typing':
+        this.renderTypingPractice(contentEl);
+        break;
+      case 'posts':
+        this.renderPostsTab(contentEl); // Render a dedicated posts tab
+        break;
+      case 'contacts':
+        this.renderContactsTab(contentEl);
+        break;
+      case 'groups':
+        this.renderGroupsTab(contentEl);
+        break;
+      case 'games':
+        this.renderGamesTab(contentEl);
+        break;
+      default:
+        contentEl.innerHTML = '<p class="text-center text-gray-500">Select a tab above.</p>';
     }
   }
 
   renderHubContent(container) {
     container.innerHTML = `
-      <div class="hub-welcome">
-        <h2>Welcome back, ${this.userData.username || 'Typist'}!</h2>
-        <div class="stats">
-          <div class="stat">
-            <span class="stat-value">${this.userData.wpm || 0}</span>
-            <span class="stat-label">WPM</span>
+      <div class="hub-welcome bg-white p-6 rounded-lg shadow-md mb-6">
+        <h2 class="text-3xl font-bold mb-4 text-gray-800">Welcome back, ${this.userData?.username || 'Typist'}!</h2>
+        <div class="stats grid grid-cols-1 md:grid-cols-3 gap-4 text-center">
+          <div class="stat bg-blue-100 p-4 rounded-md shadow-sm">
+            <span class="stat-value text-4xl font-bold text-blue-700">${this.userData?.wpm || 0}</span>
+            <span class="stat-label text-gray-600 block mt-1">WPM</span>
           </div>
-          <div class="stat">
-            <span class="stat-value">${this.userData.level || 1}</span>
-            <span class="stat-label">Level</span>
+          <div class="stat bg-green-100 p-4 rounded-md shadow-sm">
+            <span class="stat-value text-4xl font-bold text-green-700">${this.userData?.level || 1}</span>
+            <span class="stat-label text-gray-600 block mt-1">Level</span>
           </div>
-          <div class="stat">
-            <span class="stat-value">${this.userData.coins || 0}</span>
-            <span class="stat-label">Coins</span>
+          <div class="stat bg-yellow-100 p-4 rounded-md shadow-sm">
+            <span class="stat-value text-4xl font-bold text-yellow-700">${this.userData?.coins || 0}</span>
+            <span class="stat-label text-gray-600 block mt-1">Coins</span>
           </div>
         </div>
       </div>
 
-      <div class="activity-feed">
-        <h3>Recent Activity</h3>
+      <div class="activity-feed bg-white p-6 rounded-lg shadow-md">
+        <h3 class="text-2xl font-bold mb-4 text-gray-800">Recent Activity</h3>
         <div id="posts-feed"></div>
       </div>
     `;
-
-    // Load posts
     this.loadPosts();
   }
 
   // ==============
-  // TCaptcha System
+  // TCaptcha System (Kept as is for now)
   // ==============
   async generateTCaptchas() {
     const types = ['math', 'sequence', 'word'];
@@ -247,10 +332,13 @@ class ThunderType {
       const type = types[Math.floor(Math.random() * types.length)];
       const captcha = await this.createTCaptcha(type);
       this.currentCaptchas.push(captcha);
-      document.getElementById(`tcaptcha-${i}`).innerHTML = `
-        <p class="tcaptcha-question">${captcha.question}</p>
-        <input type="text" class="tcaptcha-answer" data-id="${i}" placeholder="Your answer">
-      `;
+      const captchaEl = document.getElementById(`tcaptcha-${i}`);
+      if (captchaEl) {
+        captchaEl.innerHTML = `
+          <p class="tcaptcha-question text-gray-700 mb-2">${captcha.question}</p>
+          <input type="text" class="tcaptcha-answer w-full px-3 py-2 border rounded-md focus:outline-none focus:ring-1 focus:ring-gray-300" data-id="${i}" placeholder="Your answer">
+        `;
+      }
     }
   }
 
@@ -273,13 +361,15 @@ class ThunderType {
           answer: seq.join(',')
         };
       case 'word':
-        const words = ['apple', 'banana', 'cherry'];
+        const words = ['apple', 'banana', 'cherry', 'grape', 'kiwi'];
         const selected = words[Math.floor(Math.random() * words.length)];
         return {
           type: 'word',
           question: `Type the word: ${selected.split('').map(c => c.toUpperCase()).join(' ')}`,
           answer: selected
         };
+      default:
+        return { type: 'unknown', question: '', answer: '' };
     }
   }
 
@@ -288,17 +378,17 @@ class ThunderType {
 
     const answers = Array.from(document.querySelectorAll('.tcaptcha-answer')).map(input => ({
       id: parseInt(input.dataset.id),
-      value: input.value.trim()
+      value: input.value.trim().toLowerCase() // Normalize input
     }));
 
     return this.currentCaptchas.every((captcha, index) => {
       const userAnswer = answers.find(a => a.id === index + 1);
-      return userAnswer && userAnswer.value === captcha.answer;
+      return userAnswer && userAnswer.value === captcha.answer.toLowerCase();
     });
   }
 
   // ==============
-  // Auth Handlers
+  // Auth Handlers (Updated for Firestore)
   // ==============
   async handleLogin() {
     const email = document.getElementById('login-email').value;
@@ -306,8 +396,9 @@ class ThunderType {
 
     try {
       await signInWithEmailAndPassword(auth, email, password);
+      // Auth listener will handle rendering hub
     } catch (error) {
-      alert(`Login failed: ${error.message}`);
+      this.showMessage(`Login failed: ${error.message}`, 'error');
     }
   }
 
@@ -316,128 +407,286 @@ class ThunderType {
     const password = document.getElementById('register-password').value;
 
     if (!this.validateTCaptchas()) {
-      alert('Please complete all captchas correctly');
+      this.showMessage('Please complete all captchas correctly', 'warning');
       return;
     }
 
     try {
       const userCredential = await createUserWithEmailAndPassword(auth, email, password);
-      await this.initializeUserData(userCredential.user.uid);
+      // Auth listener will handle initializing user data and rendering hub
     } catch (error) {
-      alert(`Registration failed: ${error.message}`);
+      this.showMessage(`Registration failed: ${error.message}`, 'error');
     }
   }
 
   async initializeUserData(uid) {
-    await set(ref(db, `users/${uid}`), {
-      username: `user${Math.floor(Math.random() * 10000)}`,
+    if (!uid) {
+        console.error('UID is undefined, cannot initialize user data.');
+        return;
+    }
+    const userDocRef = doc(db, `artifacts/${appId}/users/${uid}/userData/profile`);
+    const initialData = {
+      username: `user${Math.floor(1000 + Math.random() * 9000)}`, // Unique username
       level: 1,
       coins: 100,
       tier: 'bronze',
       wpm: 0,
+      accuracy: 0,
+      completedLevels: [],
       contacts: {},
       groups: {},
       createdAt: serverTimestamp(),
       lastLogin: serverTimestamp(),
       performanceProfile: this.performanceProfile
-    });
+    };
+    try {
+      await setDoc(userDocRef, initialData, { merge: true }); // Use merge: true to avoid overwriting existing fields
+      this.userData = initialData; // Update local state immediately
+      console.log('User data initialized for', uid);
+    } catch (error) {
+      console.error('Error initializing user data:', error);
+      this.showMessage(`Error initializing user data: ${error.message}`, 'error');
+    }
+  }
+
+  async updateUserData(data) {
+    if (!this.currentUser) return;
+    const userDocRef = doc(db, `artifacts/${appId}/users/${this.currentUser.uid}/userData/profile`);
+    try {
+      await updateDoc(userDocRef, data);
+      console.log('User data updated:', data);
+    } catch (error) {
+      console.error('Error updating user data:', error);
+      this.showMessage(`Error updating user data: ${error.message}`, 'error');
+    }
   }
 
   // ==============
-  // Posts System
+  // Posts System (Updated for Firestore)
   // ==============
-  loadPosts() {
-    const postsRef = ref(db, 'posts');
-    onValue(postsRef, (snapshot) => {
-      const posts = snapshot.val() || {};
-      const postsList = Object.entries(posts)
-        .map(([id, post]) => ({ id, ...post }))
-        .sort((a, b) => b.timestamp - a.timestamp);
+  renderPostsTab(container) {
+    container.innerHTML = `
+      <div class="posts-container p-6 bg-white rounded-lg shadow-md">
+        <h2 class="text-2xl font-bold mb-4 text-gray-800">Community Posts</h2>
+        <div class="mb-6">
+          <textarea id="new-post-content" class="w-full p-3 border rounded-md focus:outline-none focus:ring-2 focus:ring-blue-400" rows="3" placeholder="Write a new post..."></textarea>
+          <button id="submit-post-btn" class="mt-2 px-6 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700 transition-colors duration-200">Submit Post</button>
+        </div>
+        <div id="posts-list"></div>
+      </div>
+    `;
+    document.getElementById('submit-post-btn').addEventListener('click', this.handleSubmitPost.bind(this));
+    this.loadPosts('posts-list'); // Load posts into the dedicated list
+  }
 
-      this.renderPosts(postsList);
+  async handleSubmitPost() {
+    if (!this.currentUser) {
+      this.showMessage('Please log in to post.', 'warning');
+      return;
+    }
+    const content = document.getElementById('new-post-content').value.trim();
+    if (!content) {
+      this.showMessage('Post content cannot be empty.', 'warning');
+      return;
+    }
+
+    try {
+      const postsCollectionRef = collection(db, `artifacts/${appId}/public/data/posts`);
+      await addDoc(postsCollectionRef, {
+        authorId: this.currentUser.uid,
+        authorName: this.userData?.username || 'Anonymous',
+        content: content,
+        timestamp: serverTimestamp(),
+        likes: {}, // Store likes as a map
+        hearts: {} // Store hearts as a map
+      });
+      document.getElementById('new-post-content').value = ''; // Clear input
+      this.showMessage('Post submitted successfully!', 'success');
+    } catch (error) {
+      console.error('Error submitting post:', error);
+      this.showMessage(`Error submitting post: ${error.message}`, 'error');
+    }
+  }
+
+  loadPosts(containerId) {
+    const postsCollectionRef = collection(db, `artifacts/${appId}/public/data/posts`);
+    const q = query(postsCollectionRef, orderBy('timestamp', 'desc')); // Order by timestamp
+
+    onSnapshot(q, (snapshot) => {
+      const postsList = [];
+      snapshot.forEach(doc => {
+        postsList.push({ id: doc.id, ...doc.data() });
+      });
+      this.renderPosts(postsList, containerId);
+    }, (error) => {
+      console.error('Error loading posts:', error);
+      this.showMessage('Error loading posts.', 'error');
     });
   }
 
-  renderPosts(posts) {
-    const container = document.getElementById('posts-feed');
+  renderPosts(posts, containerId) {
+    const container = document.getElementById(containerId);
     if (!container) return;
 
     container.innerHTML = posts.map(post => `
-      <div class="post" data-id="${post.id}">
-        <div class="post-header">
-          <span class="post-author">${post.authorName || 'Anonymous'}</span>
-          <span class="post-time">${new Date(post.timestamp).toLocaleString()}</span>
+      <div class="post bg-gray-50 p-4 rounded-lg shadow-sm mb-4" data-id="${post.id}">
+        <div class="post-header text-sm text-gray-500 mb-2">
+          <span class="post-author font-semibold text-blue-600">${post.authorName || 'Anonymous'}</span>
+          <span class="post-time ml-2">${post.timestamp ? new Date(post.timestamp.toDate()).toLocaleString() : 'Loading...'}</span>
         </div>
-        <div class="post-content">${post.content}</div>
-        <div class="post-actions">
-          <button class="like-btn" data-id="${post.id}">
-            👍 ${Object.keys(post.likes || {}).length}
+        <div class="post-content text-gray-800 text-lg mb-3">${post.content}</div>
+        <div class="post-actions flex space-x-4">
+          <button class="like-btn flex items-center px-3 py-1 bg-blue-100 text-blue-700 rounded-full text-sm hover:bg-blue-200 transition-colors duration-200" data-id="${post.id}">
+            <i class="far fa-thumbs-up mr-1"></i> ${Object.keys(post.likes || {}).length}
           </button>
-          <button class="heart-btn" data-id="${post.id}">
-            ❤️ ${Object.keys(post.hearts || {}).length}
+          <button class="heart-btn flex items-center px-3 py-1 bg-red-100 text-red-700 rounded-full text-sm hover:bg-red-200 transition-colors duration-200" data-id="${post.id}">
+            <i class="far fa-heart mr-1"></i> ${Object.keys(post.hearts || {}).length}
           </button>
         </div>
       </div>
     `).join('');
 
-    // Add event listeners
     document.querySelectorAll('.like-btn').forEach(btn => {
-      btn.addEventListener('click', () => this.handleLike(btn.dataset.id));
+      btn.addEventListener('click', () => this.handleReaction(btn.dataset.id, 'likes'));
     });
 
     document.querySelectorAll('.heart-btn').forEach(btn => {
-      btn.addEventListener('click', () => this.handleHeart(btn.dataset.id));
+      btn.addEventListener('click', () => this.handleReaction(btn.dataset.id, 'hearts'));
     });
   }
 
-  handleLike(postId) {
-    if (!this.currentUser) return;
-    const likeRef = ref(db, `posts/${postId}/likes/${this.currentUser.uid}`);
-    set(likeRef, true);
-  }
+  async handleReaction(postId, type) {
+    if (!this.currentUser) {
+      this.showMessage('Please log in to react.', 'warning');
+      return;
+    }
+    const postDocRef = doc(db, `artifacts/${appId}/public/data/posts`, postId);
+    const userId = this.currentUser.uid;
 
-  handleHeart(postId) {
-    if (!this.currentUser) return;
-    const heartRef = ref(db, `posts/${postId}/hearts/${this.currentUser.uid}`);
-    set(heartRef, true);
+    try {
+      const docSnap = await getDoc(postDocRef);
+      if (docSnap.exists()) {
+        const currentReactions = docSnap.data()[type] || {};
+        if (currentReactions[userId]) {
+          // User already reacted, remove reaction
+          await updateDoc(postDocRef, {
+            [`${type}.${userId}`]: false // Firestore deletes fields with falsey values if used with updateDoc
+          });
+          // To truly delete the field, you'd use FieldValue.delete(), but for simple toggling, setting to false often works for display purposes. For robustness, use arrayUnion/arrayRemove.
+          await updateDoc(postDocRef, {
+              [type]: { ...currentReactions, [userId]: FieldValue.delete() } // This removes the field
+          });
+        } else {
+          // User has not reacted, add reaction
+          await updateDoc(postDocRef, {
+            [`${type}.${userId}`]: true
+          });
+        }
+      }
+    } catch (error) {
+      console.error(`Error handling ${type} reaction:`, error);
+      this.showMessage(`Error reacting: ${error.message}`, 'error');
+    }
   }
 
   // ==============
-  // Other Tab Contents
+  // Levels & Lessons System (Updated for Firestore & dynamic generation)
   // ==============
+
+  // Helper to generate lesson text based on level
+  generateLessonText(level) {
+    if (level === 1) {
+      return "Place your left index finger on 'f', middle on 'd', ring on 's', pinky on 'a'. Place your right index finger on 'j', middle on 'k', ring on 'l', pinky on ';'. Keep thumbs on the spacebar. Practice: f d s a j k l ;";
+    } else if (level === 2) {
+      return "Focus on 'f' and 'j'. Practice: fff jjj fff jjj fj fj fj";
+    } else if (level === 3) {
+      return "Focus on 'd' and 'k'. Practice: ddd kkk ddd kkk dk dk dk";
+    } else if (level < 10) {
+      // Introduce adjacent keys gradually
+      const homeRow = ['a', 's', 'd', 'f', 'j', 'k', 'l', ';'];
+      const currentKeys = homeRow.slice(0, Math.min(homeRow.length, level + 2));
+      const exampleText = Array(20).fill(0).map(() => currentKeys[Math.floor(Math.random() * currentKeys.length)]).join('');
+      return `Practice home row keys: ${currentKeys.join(', ')}. Type: ${exampleText}`;
+    } else if (level < 20) {
+      // Introduce E, I, R, U
+      const commonLetters = ['a', 's', 'd', 'f', 'j', 'k', 'l', ';', 'e', 'i', 'r', 'u'];
+      const exampleText = Array(30).fill(0).map(() => commonLetters[Math.floor(Math.random() * commonLetters.length)]).join('');
+      return `New keys: 'e', 'i', 'r', 'u'. Practice: ${exampleText}`;
+    } else if (level < 50) {
+        // Simple words with common letters
+        const simpleWords = ["the", "and", "but", "for", "with", "you", "are", "not", "that", "this", "can", "have"];
+        const sentence = Array(5).fill(0).map(() => simpleWords[Math.floor(Math.random() * simpleWords.length)]).join(' ');
+        return `Practice common words. Type: "${sentence}".`;
+    } else if (level < 100) {
+        // Slightly more complex words
+        const words = ["apple", "banana", "cherry", "grape", "house", "jungle", "keyboard", "lemon", "mountain", "ocean"];
+        const sentence = Array(7).fill(0).map(() => words[Math.floor(Math.random() * words.length)]).join(' ');
+        return `Practice longer words. Type: "${sentence}".`;
+    } else if (level < 200) {
+        // Introduce punctuation and capitalization
+        const text = "The quick brown fox jumps over the lazy dog. How quickly you type!";
+        // Randomly select a substring or modify it
+        const start = Math.floor(Math.random() * (text.length - 30));
+        const end = start + 30 + Math.floor(Math.random() * 20);
+        return `Focus on accuracy and special characters. Type: "${text.substring(start, end).trim()}".`;
+    } else {
+      // Generate longer, more complex sentences for higher levels
+      const sentences = [
+        "The early bird catches the worm, but the second mouse gets the cheese.",
+        "Technology has advanced at an incredible pace, changing our lives dramatically.",
+        "Learning a new skill requires dedication, patience, and consistent practice.",
+        "The sun always shines brightest after the rain, bringing hope and new beginnings.",
+        "To improve your typing speed, focus on rhythm and try not to look at the keyboard."
+      ];
+      const selectedSentence = sentences[Math.floor(Math.random() * sentences.length)];
+      return `Advanced practice. Focus on flow and speed. Type: "${selectedSentence}".`;
+    }
+  }
+
   renderLevelsContent(container) {
     container.innerHTML = `
-      <div class="levels-container">
-        <h2>Typing Levels</h2>
-        <div class="levels-grid" id="levels-grid"></div>
+      <div class="levels-container p-6 bg-white rounded-lg shadow-md">
+        <h2 class="text-2xl font-bold mb-4 text-gray-800">Typing Levels (1-500)</h2>
+        <p class="text-gray-600 mb-6">Unlock new challenges and improve your WPM!</p>
+        <div class="levels-grid grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6" id="levels-grid">
+          <!-- Levels will be loaded here -->
+        </div>
       </div>
     `;
-
     this.loadLevels();
   }
 
   async loadLevels() {
-    const levelsRef = ref(db, 'levels');
-    onValue(levelsRef, (snapshot) => {
-      const levels = snapshot.val() || {};
-      this.renderLevels(levels);
-    });
+    // Generate levels dynamically for demonstration up to 100 WPM, which is approx level 500
+    // In a real app, you might only generate levels close to the user's current level
+    const allLevels = [];
+    for (let i = 1; i <= 500; i++) {
+        const targetWPM = Math.min(100, Math.floor(i / 5) + 1); // Progress from 1 WPM to 100 WPM over 500 levels
+        allLevels.push({
+            id: `level-${i}`,
+            title: `Level ${i} - Target WPM: ${targetWPM}`,
+            description: `Master this level to reach ${targetWPM} WPM.`,
+            requiredLevel: i,
+            lessonText: this.generateLessonText(i)
+        });
+    }
+    this.renderLevels(allLevels);
   }
 
   renderLevels(levels) {
     const container = document.getElementById('levels-grid');
     if (!container) return;
 
-    container.innerHTML = Object.entries(levels)
-      .sort(([idA, levelA], [idB, levelB]) => levelA.requiredLevel - levelB.requiredLevel)
-      .map(([id, level]) => `
-        <div class="level-card ${this.userData.level >= level.requiredLevel ? 'unlocked' : 'locked'}">
-          <h3>${level.title}</h3>
-          <p>${level.description || 'Test your typing skills'}</p>
-          <p>Required Level: ${level.requiredLevel}</p>
-          ${this.userData.level >= level.requiredLevel ?
-            `<button class="start-level" data-id="${id}">Start</button>` :
-            '<div class="locked-label">Locked</div>'}
+    container.innerHTML = levels
+      .filter(level => level.requiredLevel <= (this.userData?.level || 1) + 10) // Only show nearby levels for performance
+      .map(level => `
+        <div class="level-card bg-gray-50 p-5 rounded-lg shadow-sm ${this.userData?.level >= level.requiredLevel ? 'unlocked border-green-400' : 'locked border-gray-300 opacity-70'}">
+          <h3 class="text-xl font-semibold text-gray-800 mb-2">${level.title}</h3>
+          <p class="text-gray-600 text-sm mb-3">${level.description || 'Test your typing skills'}</p>
+          <p class="text-gray-500 text-xs mb-4">Required Level: ${level.requiredLevel}</p>
+          ${this.userData?.level >= level.requiredLevel ?
+            `<button class="start-level bg-blue-600 text-white px-5 py-2 rounded-md hover:bg-blue-700 transition-colors duration-200" data-id="${level.id}">Start</button>` :
+            '<div class="locked-label text-red-500 font-bold">Locked</div>'}
         </div>
       `).join('');
 
@@ -446,9 +695,300 @@ class ThunderType {
     });
   }
 
-  startLevel(levelId) {
-    // Implement level starting logic
-    console.log(`Starting level ${levelId}`);
+  renderLessonsContent(container) {
+    container.innerHTML = `
+      <div class="lessons-container p-6 bg-white rounded-lg shadow-md">
+        <h2 class="text-2xl font-bold mb-4 text-gray-800">Typing Lessons</h2>
+        <p class="text-gray-600 mb-6">Each level comes with a specific lesson to guide your typing journey.</p>
+        <div id="lesson-details">
+          <p class="text-lg text-gray-700 mb-4">Select a level from the "Levels" tab to view its lesson.</p>
+        </div>
+        <div class="lessons-list grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6" id="lessons-grid">
+            <!-- Lessons will be displayed here -->
+        </div>
+      </div>
+    `;
+    this.loadLessonsList();
+  }
+
+  loadLessonsList() {
+    const allLevels = [];
+    for (let i = 1; i <= 500; i++) {
+        const targetWPM = Math.min(100, Math.floor(i / 5) + 1);
+        allLevels.push({
+            id: `level-${i}`,
+            title: `Level ${i} - Target WPM: ${targetWPM}`,
+            description: `Master this level to reach ${targetWPM} WPM.`,
+            requiredLevel: i,
+            lessonText: this.generateLessonText(i)
+        });
+    }
+    this.renderLessonsList(allLevels);
+  }
+
+  renderLessonsList(levels) {
+    const container = document.getElementById('lessons-grid');
+    if (!container) return;
+
+    container.innerHTML = levels
+      .filter(level => level.requiredLevel <= (this.userData?.level || 1) + 10) // Show nearby lessons
+      .map(level => `
+        <div class="lesson-card bg-gray-50 p-5 rounded-lg shadow-sm ${this.userData?.level >= level.requiredLevel ? 'unlocked border-green-400' : 'locked border-gray-300 opacity-70'}">
+          <h3 class="text-xl font-semibold text-gray-800 mb-2">${level.title}</h3>
+          <p class="text-gray-600 text-sm mb-3">
+             <span class="font-semibold">Lesson:</span> ${level.lessonText.substring(0, 80)}...
+          </p>
+          ${this.userData?.level >= level.requiredLevel ?
+            `<button class="view-lesson bg-indigo-600 text-white px-5 py-2 rounded-md hover:bg-indigo-700 transition-colors duration-200" data-id="${level.id}">View Lesson</button>` :
+            '<div class="locked-label text-red-500 font-bold">Locked</div>'}
+        </div>
+      `).join('');
+
+    document.querySelectorAll('.view-lesson').forEach(btn => {
+      btn.addEventListener('click', () => this.displayLesson(btn.dataset.id));
+    });
+  }
+
+  displayLesson(levelId) {
+    const levelNumber = parseInt(levelId.replace('level-', ''));
+    const lessonText = this.generateLessonText(levelNumber);
+    const lessonDetailsContainer = document.getElementById('lesson-details');
+    if (lessonDetailsContainer) {
+      lessonDetailsContainer.innerHTML = `
+        <h3 class="text-xl font-bold mb-2 text-gray-800">Lesson for Level ${levelNumber}</h3>
+        <p class="text-gray-700 text-lg">${lessonText}</p>
+        <button class="start-lesson-practice bg-blue-600 text-white px-5 py-2 rounded-md mt-4 hover:bg-blue-700 transition-colors duration-200" data-id="${levelId}">Start Practice for this Lesson</button>
+      `;
+      document.querySelector('.start-lesson-practice').addEventListener('click', () => this.startLevel(levelId));
+    }
+  }
+
+  // ==============
+  // Typing Practice Game
+  // ==============
+  renderTypingPractice(container) {
+    container.innerHTML = `
+      <div class="typing-container p-6 bg-white rounded-lg shadow-md flex flex-col items-center justify-center">
+        <h2 class="text-2xl font-bold mb-4 text-gray-800">Typing Practice</h2>
+        <div class="text-to-type border border-gray-300 bg-gray-50 p-6 rounded-md w-full max-w-2xl text-xl leading-relaxed font-mono mb-6 text-gray-800" id="text-to-type">
+          <span id="correct-text"></span><span id="current-char"></span><span id="remaining-text"></span>
+        </div>
+        <input type="text" id="typing-input" class="w-full max-w-2xl px-4 py-3 border border-blue-400 rounded-md text-xl focus:outline-none focus:ring-2 focus:ring-blue-600 mb-6 font-mono" placeholder="Start typing here..." autocomplete="off" autocapitalize="off" spellcheck="false">
+
+        <div class="stats-display grid grid-cols-2 gap-4 w-full max-w-2xl mb-6">
+          <div class="stat-box bg-blue-100 p-4 rounded-md text-center">
+            <div class="text-3xl font-bold text-blue-700" id="wpm-display">0</div>
+            <div class="text-gray-600">WPM</div>
+          </div>
+          <div class="stat-box bg-green-100 p-4 rounded-md text-center">
+            <div class="text-3xl font-bold text-green-700" id="accuracy-display">100%</div>
+            <div class="text-gray-600">Accuracy</div>
+          </div>
+        </div>
+
+        <button id="restart-btn" class="bg-gray-500 text-white px-6 py-3 rounded-md hover:bg-gray-600 transition-colors duration-200">Restart Practice</button>
+      </div>
+    `;
+
+    // Initialize typing input listener after rendering
+    this.typingInput = document.getElementById('typing-input');
+    this.textToTypeDisplay = document.getElementById('text-to-type');
+    this.wpmDisplay = document.getElementById('wpm-display');
+    this.accuracyDisplay = document.getElementById('accuracy-display');
+    this.restartBtn = document.getElementById('restart-btn');
+
+    this.restartBtn.addEventListener('click', () => this.startLevel(this.currentLevelId || 'level-1')); // Restart current level or level 1
+    this.typingInput.addEventListener('keydown', this.handleTypingInput.bind(this));
+    this.typingInput.addEventListener('input', this.updateTypingDisplay.bind(this));
+
+    // Initially start level 1 or the user's current level
+    this.startLevel(`level-${this.userData?.level || 1}`);
+  }
+
+  async startLevel(levelId) {
+    this.currentLevelId = levelId;
+    const levelNumber = parseInt(levelId.replace('level-', ''));
+    this.currentLevelText = this.generateLessonText(levelNumber).replace('Practice:', '').replace('Type:', '').trim();
+
+    this.typedText = '';
+    this.errors = 0;
+    this.correctChars = 0;
+    this.startTime = 0;
+    this.typingActive = false;
+    clearInterval(this.timerInterval);
+
+    this.typingInput.value = '';
+    this.typingInput.focus();
+    this.updateTypingDisplay();
+    this.updateStatsDisplay();
+
+    this.showMessage(`Starting ${this.generateLessonText(levelNumber)}`, 'info');
+  }
+
+  updateTypingDisplay() {
+    const targetText = this.currentLevelText;
+    const typedText = this.typedText;
+
+    let correctHtml = '';
+    let currentCharHtml = '';
+    let remainingHtml = '';
+
+    const inputLength = typedText.length;
+    const targetLength = targetText.length;
+
+    for (let i = 0; i < targetLength; i++) {
+      if (i < inputLength) {
+        if (typedText[i] === targetText[i]) {
+          correctHtml += `<span class="text-green-600">${targetText[i]}</span>`;
+        } else {
+          correctHtml += `<span class="text-red-600">${targetText[i]}</span>`;
+        }
+      } else if (i === inputLength) {
+        currentCharHtml = `<span class="current-char bg-blue-200 rounded px-1">${targetText[i] || ''}</span>`;
+      } else {
+        remainingHtml += `<span class="text-gray-400">${targetText[i]}</span>`;
+      }
+    }
+
+    document.getElementById('correct-text').innerHTML = correctHtml;
+    document.getElementById('current-char').innerHTML = currentCharHtml;
+    document.getElementById('remaining-text').innerHTML = remainingHtml;
+  }
+
+  handleTypingInput(event) {
+    if (!this.typingActive && this.currentLevelText.length > 0) {
+      this.typingActive = true;
+      this.startTime = performance.now();
+      this.timerInterval = setInterval(() => {
+        this.updateStatsDisplay();
+      }, 1000); // Update WPM every second
+    }
+
+    // Handle backspace separately to allow correction without penalizing errors count.
+    if (event.key === 'Backspace') {
+        // Prevent default browser backspace behavior if needed, but typically not required for input fields
+        // event.preventDefault();
+        this.typedText = this.typedText.slice(0, -1);
+        this.updateTypingDisplay();
+        this.updateStatsDisplay();
+        return; // Don't process further as a character input
+    }
+
+    if (event.key.length === 1) { // Only process single character inputs (not shift, alt, ctrl, etc.)
+      const expectedChar = this.currentLevelText[this.typedText.length];
+      const typedChar = event.key;
+
+      if (typedChar === expectedChar) {
+        this.correctChars++;
+      } else {
+        this.errors++;
+      }
+      this.typedText += typedChar;
+    }
+
+    this.updateTypingDisplay();
+    this.updateStatsDisplay();
+
+    if (this.typedText.length === this.currentLevelText.length) {
+      this.finishLevel();
+    }
+  }
+
+  updateStatsDisplay() {
+    const timeElapsedSeconds = (performance.now() - this.startTime) / 1000;
+    const wordsTyped = this.correctChars / 5; // A common approximation: 1 word = 5 characters
+    let wpm = 0;
+    if (timeElapsedSeconds > 0) {
+      wpm = Math.round((wordsTyped / timeElapsedSeconds) * 60);
+    }
+
+    let accuracy = 100;
+    if (this.typedText.length > 0) {
+      accuracy = Math.round((this.correctChars / this.typedText.length) * 100);
+    }
+
+    this.wpmDisplay.textContent = wpm;
+    this.accuracyDisplay.textContent = `${accuracy}%`;
+  }
+
+  async finishLevel() {
+    this.typingActive = false;
+    clearInterval(this.timerInterval);
+    this.updateStatsDisplay(); // Final update
+
+    const finalWPM = parseInt(this.wpmDisplay.textContent);
+    const finalAccuracy = parseInt(this.accuracyDisplay.textContent);
+    const currentLevel = parseInt(this.currentLevelId.replace('level-', ''));
+
+    let message = `Level Completed! WPM: ${finalWPM}, Accuracy: ${finalAccuracy}%`;
+
+    // Logic for level progression
+    const nextLevel = currentLevel + 1;
+    const targetWPMForCurrentLevel = Math.min(100, Math.floor(currentLevel / 5) + 1); // WPM target for *this* level
+
+    if (finalWPM >= targetWPMForCurrentLevel && finalAccuracy >= 90) { // Example criteria
+      if (nextLevel <= 500) { // Max level is 500
+        message += ` Great job! Unlocked Level ${nextLevel}!`;
+        // Update user's level and WPM if new WPM is higher
+        if (nextLevel > (this.userData?.level || 0)) {
+            await this.updateUserData({
+                level: nextLevel,
+                wpm: Math.max(this.userData?.wpm || 0, finalWPM), // Update WPM if it's a new high score
+                accuracy: finalAccuracy,
+                completedLevels: arrayUnion(this.currentLevelId) // Mark level as completed
+            });
+        } else {
+             // Just update WPM if it's higher for the same level
+            await this.updateUserData({
+                wpm: Math.max(this.userData?.wpm || 0, finalWPM),
+                accuracy: finalAccuracy
+            });
+        }
+      } else {
+        message += ` You've completed all available levels! Amazing!`;
+      }
+      this.showMessage(message, 'success');
+    } else {
+      message += ` Keep practicing to reach the target WPM of ${targetWPMForCurrentLevel} and 90%+ accuracy!`;
+      this.showMessage(message, 'warning');
+    }
+
+    // You could also show a modal here with detailed results
+    setTimeout(() => {
+      this.renderHub(); // Go back to hub or levels screen after a short delay
+    }, 3000);
+  }
+
+
+  // ==============
+  // Other Tab Contents (Placeholder for now)
+  // ==============
+  renderContactsTab(container) {
+    container.innerHTML = `
+      <div class="contacts-container p-6 bg-white rounded-lg shadow-md">
+        <h2 class="text-2xl font-bold mb-4 text-gray-800">Your Contacts</h2>
+        <p class="text-gray-600">This section will allow you to manage your typing buddies!</p>
+        <p class="text-gray-600">User ID: <span class="font-bold text-blue-600">${this.currentUser?.uid || 'Not logged in'}</span></p>
+      </div>
+    `;
+  }
+
+  renderGroupsTab(container) {
+    container.innerHTML = `
+      <div class="groups-container p-6 bg-white rounded-lg shadow-md">
+        <h2 class="text-2xl font-bold mb-4 text-gray-800">Your Groups</h2>
+        <p class="text-gray-600">Join or create typing groups to practice with friends.</p>
+      </div>
+    `;
+  }
+
+  renderGamesTab(container) {
+    container.innerHTML = `
+      <div class="games-container p-6 bg-white rounded-lg shadow-md">
+        <h2 class="text-2xl font-bold mb-4 text-gray-800">Typing Games</h2>
+        <p class="text-gray-600">Fun games to improve your typing skills!</p>
+      </div>
+    `;
   }
 
   // ==============
@@ -466,19 +1006,50 @@ class ThunderType {
   }
 
   // ==============
-  // Initialization
+  // Utility & UI Update
   // ==============
+  showMessage(message, type = 'info') {
+    const messageBox = document.createElement('div');
+    messageBox.className = `message-box fixed top-4 right-4 p-4 rounded-md shadow-lg text-white z-50 animate-fade-in-down`;
+    if (type === 'success') messageBox.classList.add('bg-green-500');
+    else if (type === 'error') messageBox.classList.add('bg-red-500');
+    else if (type === 'warning') messageBox.classList.add('bg-yellow-500');
+    else messageBox.classList.add('bg-blue-500');
+
+    messageBox.textContent = message;
+    document.body.appendChild(messageBox);
+
+    setTimeout(() => {
+      messageBox.classList.remove('animate-fade-in-down');
+      messageBox.classList.add('animate-fade-out-up');
+      messageBox.addEventListener('animationend', () => messageBox.remove());
+    }, 3000); // Message disappears after 3 seconds
+  }
+
   updateUI() {
     // Update UI elements when user data changes
     const usernameEl = document.querySelector('.username');
     const levelEl = document.querySelector('.level');
     const coinsEl = document.querySelector('.coins');
+    const wpmHubEl = document.querySelector('.hub-welcome .stat-value:nth-child(1)'); // WPM in hub
+    const levelHubEl = document.querySelector('.hub-welcome .stat-value:nth-child(2)'); // Level in hub
+    const coinsHubEl = document.querySelector('.hub-welcome .stat-value:nth-child(3)'); // Coins in hub
+    const uidDisplayEl = document.querySelector('.hub-header .text-sm');
 
-    if (usernameEl) usernameEl.textContent = this.userData.username || 'User';
-    if (levelEl) levelEl.textContent = `Level ${this.userData.level || 1}`;
-    if (coinsEl) coinsEl.textContent = `${this.userData.coins || 0} coins`;
+
+    if (usernameEl) usernameEl.textContent = this.userData?.username || 'User';
+    if (levelEl) levelEl.textContent = `Level ${this.userData?.level || 1}`;
+    if (coinsEl) coinsEl.textContent = `${this.userData?.coins || 0} coins`;
+
+    // Update hub stats if elements exist
+    if (wpmHubEl) wpmHubEl.textContent = this.userData?.wpm || 0;
+    if (levelHubEl) levelHubEl.textContent = this.userData?.level || 1;
+    if (coinsHubEl) coinsHubEl.textContent = this.userData?.coins || 0;
+    if (uidDisplayEl) uidDisplayEl.textContent = `UID: ${this.currentUser?.uid || 'N/A'}`;
   }
 }
 
-// Initialize the app
-new ThunderType(); // Fixed: Removed 'const app =' to prevent redeclaration.
+// Initialize the app when the DOM is fully loaded
+document.addEventListener('DOMContentLoaded', () => {
+  new ThunderType();
+});
