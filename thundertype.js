@@ -24,24 +24,29 @@ import {
   addDoc,
   updateDoc,
   arrayUnion,
-  arrayRemove
+  arrayRemove,
+  // FieldValue is needed for explicitly deleting fields in Firestore, e.g., for toggling reactions
+  FieldValue
 } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
 
 // Global variables provided by the Canvas environment
 const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
-const firebaseConfig = JSON.parse(typeof __firebase_config !== 'undefined' ? __firebase_config : '{}');
+const firebaseConfigRaw = typeof __firebase_config !== 'undefined' ? __firebase_config : '{}';
 const initialAuthToken = typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : null;
 
-// Initialize Firebase
-const app = initializeApp(firebaseConfig);
-const auth = getAuth(app);
-const db = getFirestore(app);
+// Declare Firebase instances globally (or within the class after initialization)
+let appInstance;
+let authInstance;
+let dbInstance;
+
+console.log('thundertype.js loaded');
 
 // =================
 // Core Application
 // =================
 class ThunderType {
   constructor() {
+    console.log('ThunderType constructor called');
     this.currentUser = null;
     this.userData = null;
     this.activeTab = 'hub';
@@ -55,14 +60,49 @@ class ThunderType {
     this.timerInterval = null; // For the typing timer
     this.typingActive = false; // Flag to indicate if typing session is active
 
+    // Display loading screen immediately, before any complex initialization
+    this.renderLoadingScreen();
+
+    // Begin main initialization process
     this.init();
   }
 
   async init() {
+    console.log('init() called');
     this.detectPerformance();
+
+    // Initialize Firebase instances if they haven't been initialized yet
+    if (!appInstance) {
+      try {
+        const parsedFirebaseConfig = JSON.parse(firebaseConfigRaw);
+        if (Object.keys(parsedFirebaseConfig).length === 0) {
+            throw new Error("Firebase config is empty or invalid.");
+        }
+        appInstance = initializeApp(parsedFirebaseConfig);
+        authInstance = getAuth(appInstance);
+        dbInstance = getFirestore(appInstance);
+        console.log("Firebase initialized successfully.");
+      } catch (error) {
+        console.error("Firebase initialization failed:", error);
+        // Display an error screen if Firebase initialization fails
+        document.getElementById('app').innerHTML = `
+          <div class="error-screen flex flex-col items-center justify-center h-screen bg-red-100 text-red-800 p-4">
+            <p class="text-2xl font-bold mb-4 text-center">Error: Application Failed to Load</p>
+            <p class="text-lg text-center">Please check the console for details or contact support.</p>
+            <p class="text-sm mt-4 text-center">Error Message: <span class="font-mono text-red-900">${error.message}</span></p>
+          </div>
+        `;
+        return; // Stop further initialization as Firebase is critical
+      }
+    }
+
+    // Assign the initialized instances to the class properties
+    this.app = appInstance;
+    this.auth = authInstance;
+    this.db = dbInstance;
+
     this.setupAuthListener();
-    this.renderLoadingScreen();
-    this.setupCustomCursor();
+    this.setupCustomCursor(); // Ensure cursor is set up after initial render
   }
 
   detectPerformance() {
@@ -81,17 +121,19 @@ class ThunderType {
   }
 
   setupAuthListener() {
-    onAuthStateChanged(auth, async (user) => {
+    // Use the initialized auth instance
+    onAuthStateChanged(this.auth, async (user) => {
+      console.log('onAuthStateChanged fired. User:', user);
       if (initialAuthToken && !this.currentUser) {
         // Sign in with custom token if available and not already signed in
         try {
-          await signInWithCustomToken(auth, initialAuthToken);
+          await signInWithCustomToken(this.auth, initialAuthToken);
           console.log('Signed in with custom token.');
         } catch (error) {
           console.error('Error signing in with custom token:', error);
           // Fallback to anonymous if custom token fails
           try {
-            await signInAnonymously(auth);
+            await signInAnonymously(this.auth);
             console.log('Signed in anonymously after custom token failure.');
           } catch (anonError) {
             console.error('Error signing in anonymously:', anonError);
@@ -100,20 +142,20 @@ class ThunderType {
       } else if (!user) {
         // Sign in anonymously if no user and no initial token (or token failed)
         try {
-          await signInAnonymously(auth);
+          await signInAnonymously(this.auth);
           console.log('Signed in anonymously.');
         } catch (error) {
           console.error('Error signing in anonymously:', error);
         }
       }
 
-      this.currentUser = auth.currentUser; // Update current user after potential sign-in
+      this.currentUser = this.auth.currentUser; // Update current user after potential sign-in
       this.isAuthReady = true; // Auth state is now determined
 
       if (this.currentUser) {
         console.log('User is logged in:', this.currentUser.uid);
         this.loadUserData();
-        this.renderHub();
+        // Only render hub after user data is loaded/initialized to avoid flickering
       } else {
         console.log('No user logged in, rendering auth screen.');
         this.renderAuthScreen();
@@ -122,29 +164,33 @@ class ThunderType {
   }
 
   async loadUserData() {
-    if (!this.currentUser || !this.isAuthReady) return;
+    // Ensure Firebase is initialized and auth is ready
+    if (!this.currentUser || !this.isAuthReady || !this.db) {
+        console.warn('loadUserData called before Firebase/Auth is ready.');
+        return;
+    }
 
     // Use a unique path for user data based on appId and userId for Firestore
-    const userDocRef = doc(db, `artifacts/${appId}/users/${this.currentUser.uid}/userData/profile`);
-    console.log('Loading user data from:', userDocRef.path);
+    const userDocRef = doc(this.db, `artifacts/${appId}/users/${this.currentUser.uid}/userData/profile`);
+    console.log('Attempting to load user data from:', userDocRef.path);
 
     onSnapshot(userDocRef, async (docSnap) => {
+      console.log('User data snapshot received.');
       if (docSnap.exists()) {
         this.userData = docSnap.data();
         console.log('User data loaded:', this.userData);
       } else {
         // Initialize new user data if it doesn't exist
-        console.log('No user data found, initializing...');
+        console.log('No user data found, initializing new user data...');
         await this.initializeUserData(this.currentUser.uid);
       }
       this.updateUI();
-      // Ensure hub is rendered only after user data is loaded/initialized
-      if (document.getElementById('app').querySelector('.loading-screen')) {
-         this.renderHub();
-      }
+      // Only render hub/main UI *after* user data has been successfully loaded or initialized
+      this.renderHub();
     }, (error) => {
-      console.error('Error loading user data:', error);
-      // Even if loading fails, try to render the hub to avoid being stuck on loading
+      console.error('Error loading user data via onSnapshot:', error);
+      this.showMessage(`Error loading user data: ${error.message}`, 'error');
+      // Render hub even on error to prevent being stuck on loading
       this.renderHub();
     });
   }
@@ -153,6 +199,7 @@ class ThunderType {
   // UI Rendering
   // ==============
   renderLoadingScreen() {
+    console.log('renderLoadingScreen() called');
     const tips = [
       "Keep your fingers on the home row for better typing speed",
       "Practice regularly to improve your muscle memory",
@@ -318,7 +365,7 @@ class ThunderType {
         <div id="posts-feed"></div>
       </div>
     `;
-    this.loadPosts();
+    this.loadPosts('posts-feed'); // Load posts into the activity feed
   }
 
   // ==============
@@ -395,7 +442,7 @@ class ThunderType {
     const password = document.getElementById('login-password').value;
 
     try {
-      await signInWithEmailAndPassword(auth, email, password);
+      await signInWithEmailAndPassword(this.auth, email, password);
       // Auth listener will handle rendering hub
     } catch (error) {
       this.showMessage(`Login failed: ${error.message}`, 'error');
@@ -412,7 +459,7 @@ class ThunderType {
     }
 
     try {
-      const userCredential = await createUserWithEmailAndPassword(auth, email, password);
+      const userCredential = await createUserWithEmailAndPassword(this.auth, email, password);
       // Auth listener will handle initializing user data and rendering hub
     } catch (error) {
       this.showMessage(`Registration failed: ${error.message}`, 'error');
@@ -424,7 +471,7 @@ class ThunderType {
         console.error('UID is undefined, cannot initialize user data.');
         return;
     }
-    const userDocRef = doc(db, `artifacts/${appId}/users/${uid}/userData/profile`);
+    const userDocRef = doc(this.db, `artifacts/${appId}/users/${uid}/userData/profile`);
     const initialData = {
       username: `user${Math.floor(1000 + Math.random() * 9000)}`, // Unique username
       level: 1,
@@ -450,8 +497,11 @@ class ThunderType {
   }
 
   async updateUserData(data) {
-    if (!this.currentUser) return;
-    const userDocRef = doc(db, `artifacts/${appId}/users/${this.currentUser.uid}/userData/profile`);
+    if (!this.currentUser || !this.db) {
+        console.warn('updateUserData called before Firebase/Auth is ready.');
+        return;
+    }
+    const userDocRef = doc(this.db, `artifacts/${appId}/users/${this.currentUser.uid}/userData/profile`);
     try {
       await updateDoc(userDocRef, data);
       console.log('User data updated:', data);
@@ -480,7 +530,7 @@ class ThunderType {
   }
 
   async handleSubmitPost() {
-    if (!this.currentUser) {
+    if (!this.currentUser || !this.db) {
       this.showMessage('Please log in to post.', 'warning');
       return;
     }
@@ -491,7 +541,7 @@ class ThunderType {
     }
 
     try {
-      const postsCollectionRef = collection(db, `artifacts/${appId}/public/data/posts`);
+      const postsCollectionRef = collection(this.db, `artifacts/${appId}/public/data/posts`);
       await addDoc(postsCollectionRef, {
         authorId: this.currentUser.uid,
         authorName: this.userData?.username || 'Anonymous',
@@ -509,7 +559,11 @@ class ThunderType {
   }
 
   loadPosts(containerId) {
-    const postsCollectionRef = collection(db, `artifacts/${appId}/public/data/posts`);
+    if (!this.db) {
+        console.warn('loadPosts called before Firestore is ready.');
+        return;
+    }
+    const postsCollectionRef = collection(this.db, `artifacts/${appId}/public/data/posts`);
     const q = query(postsCollectionRef, orderBy('timestamp', 'desc')); // Order by timestamp
 
     onSnapshot(q, (snapshot) => {
@@ -556,11 +610,11 @@ class ThunderType {
   }
 
   async handleReaction(postId, type) {
-    if (!this.currentUser) {
+    if (!this.currentUser || !this.db) {
       this.showMessage('Please log in to react.', 'warning');
       return;
     }
-    const postDocRef = doc(db, `artifacts/${appId}/public/data/posts`, postId);
+    const postDocRef = doc(this.db, `artifacts/${appId}/public/data/posts`, postId);
     const userId = this.currentUser.uid;
 
     try {
@@ -568,13 +622,9 @@ class ThunderType {
       if (docSnap.exists()) {
         const currentReactions = docSnap.data()[type] || {};
         if (currentReactions[userId]) {
-          // User already reacted, remove reaction
+          // User already reacted, remove reaction by deleting the field
           await updateDoc(postDocRef, {
-            [`${type}.${userId}`]: false // Firestore deletes fields with falsey values if used with updateDoc
-          });
-          // To truly delete the field, you'd use FieldValue.delete(), but for simple toggling, setting to false often works for display purposes. For robustness, use arrayUnion/arrayRemove.
-          await updateDoc(postDocRef, {
-              [type]: { ...currentReactions, [userId]: FieldValue.delete() } // This removes the field
+              [`${type}.${userId}`]: FieldValue.delete()
           });
         } else {
           // User has not reacted, add reaction
@@ -636,7 +686,11 @@ class ThunderType {
         "Technology has advanced at an incredible pace, changing our lives dramatically.",
         "Learning a new skill requires dedication, patience, and consistent practice.",
         "The sun always shines brightest after the rain, bringing hope and new beginnings.",
-        "To improve your typing speed, focus on rhythm and try not to look at the keyboard."
+        "To improve your typing speed, focus on rhythm and try not to look at the keyboard.",
+        "Practice makes perfect, especially when it comes to mastering touch typing.",
+        "The swift brown fox jumps over the lazy dog and then takes a nap.",
+        "Efficient communication relies on clear, concise, and accurate typing skills.",
+        "Developing good typing habits early on will benefit you throughout your life."
       ];
       const selectedSentence = sentences[Math.floor(Math.random() * sentences.length)];
       return `Advanced practice. Focus on flow and speed. Type: "${selectedSentence}".`;
@@ -691,7 +745,11 @@ class ThunderType {
       `).join('');
 
     document.querySelectorAll('.start-level').forEach(btn => {
-      btn.addEventListener('click', () => this.startLevel(btn.dataset.id));
+      btn.addEventListener('click', () => {
+        this.startLevel(btn.dataset.id);
+        this.activeTab = 'typing'; // Switch to typing tab
+        this.loadTabContent(); // Reload tab content
+      });
     });
   }
 
@@ -701,7 +759,7 @@ class ThunderType {
         <h2 class="text-2xl font-bold mb-4 text-gray-800">Typing Lessons</h2>
         <p class="text-gray-600 mb-6">Each level comes with a specific lesson to guide your typing journey.</p>
         <div id="lesson-details">
-          <p class="text-lg text-gray-700 mb-4">Select a level from the "Levels" tab to view its lesson.</p>
+          <p class="text-lg text-gray-700 mb-4">Select a level from the "Levels" tab or below to view its lesson.</p>
         </div>
         <div class="lessons-list grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6" id="lessons-grid">
             <!-- Lessons will be displayed here -->
@@ -759,7 +817,11 @@ class ThunderType {
         <p class="text-gray-700 text-lg">${lessonText}</p>
         <button class="start-lesson-practice bg-blue-600 text-white px-5 py-2 rounded-md mt-4 hover:bg-blue-700 transition-colors duration-200" data-id="${levelId}">Start Practice for this Lesson</button>
       `;
-      document.querySelector('.start-lesson-practice').addEventListener('click', () => this.startLevel(levelId));
+      document.querySelector('.start-lesson-practice').addEventListener('click', () => {
+        this.startLevel(levelId);
+        this.activeTab = 'typing'; // Switch to typing tab
+        this.loadTabContent(); // Reload tab content
+      });
     }
   }
 
@@ -797,9 +859,11 @@ class ThunderType {
     this.accuracyDisplay = document.getElementById('accuracy-display');
     this.restartBtn = document.getElementById('restart-btn');
 
-    this.restartBtn.addEventListener('click', () => this.startLevel(this.currentLevelId || 'level-1')); // Restart current level or level 1
+    this.restartBtn.addEventListener('click', () => this.startLevel(this.currentLevelId || `level-${this.userData?.level || 1}`)); // Restart current level or user's level
     this.typingInput.addEventListener('keydown', this.handleTypingInput.bind(this));
-    this.typingInput.addEventListener('input', this.updateTypingDisplay.bind(this));
+    // The 'input' event listener is useful for immediate visual updates but keydown is for logic
+    // this.typingInput.addEventListener('input', this.updateTypingDisplay.bind(this));
+
 
     // Initially start level 1 or the user's current level
     this.startLevel(`level-${this.userData?.level || 1}`);
@@ -817,12 +881,14 @@ class ThunderType {
     this.typingActive = false;
     clearInterval(this.timerInterval);
 
-    this.typingInput.value = '';
-    this.typingInput.focus();
+    if (this.typingInput) {
+        this.typingInput.value = '';
+        this.typingInput.focus();
+    }
     this.updateTypingDisplay();
     this.updateStatsDisplay();
 
-    this.showMessage(`Starting ${this.generateLessonText(levelNumber)}`, 'info');
+    this.showMessage(`Starting Level ${levelNumber}! ${this.generateLessonText(levelNumber)}`, 'info', 5000);
   }
 
   updateTypingDisplay() {
@@ -849,14 +915,22 @@ class ThunderType {
         remainingHtml += `<span class="text-gray-400">${targetText[i]}</span>`;
       }
     }
+    // Handle case where user types past the target text length
+    if (inputLength > targetLength) {
+        for (let i = targetLength; i < inputLength; i++) {
+            correctHtml += `<span class="text-red-600">${typedText[i]}</span>`; // Mark extra characters as errors
+        }
+    }
 
-    document.getElementById('correct-text').innerHTML = correctHtml;
-    document.getElementById('current-char').innerHTML = currentCharHtml;
-    document.getElementById('remaining-text').innerHTML = remainingHtml;
+
+    if (document.getElementById('correct-text')) document.getElementById('correct-text').innerHTML = correctHtml;
+    if (document.getElementById('current-char')) document.getElementById('current-char').innerHTML = currentCharHtml;
+    if (document.getElementById('remaining-text')) document.getElementById('remaining-text').innerHTML = remainingHtml;
   }
 
   handleTypingInput(event) {
-    if (!this.typingActive && this.currentLevelText.length > 0) {
+    // Only start timer if text is available and we haven't started yet
+    if (!this.typingActive && this.currentLevelText.length > 0 && event.key.length === 1 && !event.ctrlKey && !event.altKey && !event.metaKey) {
       this.typingActive = true;
       this.startTime = performance.now();
       this.timerInterval = setInterval(() => {
@@ -864,54 +938,62 @@ class ThunderType {
       }, 1000); // Update WPM every second
     }
 
-    // Handle backspace separately to allow correction without penalizing errors count.
     if (event.key === 'Backspace') {
-        // Prevent default browser backspace behavior if needed, but typically not required for input fields
-        // event.preventDefault();
-        this.typedText = this.typedText.slice(0, -1);
-        this.updateTypingDisplay();
-        this.updateStatsDisplay();
-        return; // Don't process further as a character input
+        if (this.typedText.length > 0) {
+            this.typedText = this.typedText.slice(0, -1);
+            // No direct error deduction here, as user is correcting.
+            // Errors are only counted on initial incorrect input.
+        }
+    } else if (event.key.length === 1 && !event.ctrlKey && !event.altKey && !event.metaKey) { // Only process single character inputs (not shift, alt, ctrl, etc.)
+        const expectedChar = this.currentLevelText[this.typedText.length];
+        const typedChar = event.key;
+
+        if (this.typedText.length < this.currentLevelText.length) {
+            if (typedChar === expectedChar) {
+              this.correctChars++;
+            } else {
+              this.errors++;
+            }
+        } else {
+            // If typing past target text, still count as error
+            this.errors++;
+        }
+        this.typedText += typedChar;
+    } else if (event.key === ' ' && this.typedText.length === this.currentLevelText.length) {
+        // Prevent extra spaces from being typed at the end if the text is complete
+        event.preventDefault();
     }
 
-    if (event.key.length === 1) { // Only process single character inputs (not shift, alt, ctrl, etc.)
-      const expectedChar = this.currentLevelText[this.typedText.length];
-      const typedChar = event.key;
-
-      if (typedChar === expectedChar) {
-        this.correctChars++;
-      } else {
-        this.errors++;
-      }
-      this.typedText += typedChar;
-    }
 
     this.updateTypingDisplay();
     this.updateStatsDisplay();
 
-    if (this.typedText.length === this.currentLevelText.length) {
+    if (this.typedText.length >= this.currentLevelText.length && this.typingActive) {
+      // Allow slight overshoot, but finish if enough typed
       this.finishLevel();
     }
   }
 
   updateStatsDisplay() {
     const timeElapsedSeconds = (performance.now() - this.startTime) / 1000;
-    const wordsTyped = this.correctChars / 5; // A common approximation: 1 word = 5 characters
+    const totalTypedChars = this.typedText.length;
     let wpm = 0;
     if (timeElapsedSeconds > 0) {
-      wpm = Math.round((wordsTyped / timeElapsedSeconds) * 60);
+      // Calculate WPM based on correct characters per minute
+      wpm = Math.round((this.correctChars / 5) / timeElapsedSeconds * 60);
     }
 
     let accuracy = 100;
-    if (this.typedText.length > 0) {
-      accuracy = Math.round((this.correctChars / this.typedText.length) * 100);
+    if (totalTypedChars > 0) {
+      accuracy = Math.round((this.correctChars / totalTypedChars) * 100);
     }
 
-    this.wpmDisplay.textContent = wpm;
-    this.accuracyDisplay.textContent = `${accuracy}%`;
+    if (this.wpmDisplay) this.wpmDisplay.textContent = wpm;
+    if (this.accuracyDisplay) this.accuracyDisplay.textContent = `${accuracy}%`;
   }
 
   async finishLevel() {
+    console.log('finishLevel called');
     this.typingActive = false;
     clearInterval(this.timerInterval);
     this.updateStatsDisplay(); // Final update
@@ -920,7 +1002,7 @@ class ThunderType {
     const finalAccuracy = parseInt(this.accuracyDisplay.textContent);
     const currentLevel = parseInt(this.currentLevelId.replace('level-', ''));
 
-    let message = `Level Completed! WPM: ${finalWPM}, Accuracy: ${finalAccuracy}%`;
+    let message = `Level Completed! WPM: ${finalWPM}, Accuracy: ${finalAccuracy}%. Errors: ${this.errors}.`;
 
     // Logic for level progression
     const nextLevel = currentLevel + 1;
@@ -947,16 +1029,17 @@ class ThunderType {
       } else {
         message += ` You've completed all available levels! Amazing!`;
       }
-      this.showMessage(message, 'success');
+      this.showMessage(message, 'success', 5000);
     } else {
       message += ` Keep practicing to reach the target WPM of ${targetWPMForCurrentLevel} and 90%+ accuracy!`;
-      this.showMessage(message, 'warning');
+      this.showMessage(message, 'warning', 5000);
     }
 
     // You could also show a modal here with detailed results
     setTimeout(() => {
-      this.renderHub(); // Go back to hub or levels screen after a short delay
-    }, 3000);
+      this.activeTab = 'levels'; // Go back to levels screen
+      this.loadTabContent();
+    }, 5000); // Wait for 5 seconds to show message
   }
 
 
@@ -1008,7 +1091,7 @@ class ThunderType {
   // ==============
   // Utility & UI Update
   // ==============
-  showMessage(message, type = 'info') {
+  showMessage(message, type = 'info', duration = 3000) {
     const messageBox = document.createElement('div');
     messageBox.className = `message-box fixed top-4 right-4 p-4 rounded-md shadow-lg text-white z-50 animate-fade-in-down`;
     if (type === 'success') messageBox.classList.add('bg-green-500');
@@ -1023,7 +1106,7 @@ class ThunderType {
       messageBox.classList.remove('animate-fade-in-down');
       messageBox.classList.add('animate-fade-out-up');
       messageBox.addEventListener('animationend', () => messageBox.remove());
-    }, 3000); // Message disappears after 3 seconds
+    }, duration); // Message disappears after 'duration' milliseconds
   }
 
   updateUI() {
@@ -1051,5 +1134,6 @@ class ThunderType {
 
 // Initialize the app when the DOM is fully loaded
 document.addEventListener('DOMContentLoaded', () => {
+  console.log('DOMContentLoaded fired, initializing ThunderType.');
   new ThunderType();
 });
